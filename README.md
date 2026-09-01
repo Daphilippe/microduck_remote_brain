@@ -89,8 +89,8 @@ The script starts components in this order:
 3. the production `robotd` runtime connected to MuJoCo through `RemoteIo`;
 4. simulated ToF and the duck voice bank through WSLg PulseAudio;
 5. a TCP gateway on `127.0.0.1:8765` representing the Wi-Fi hop;
-6. the MuJoCo telemetry dashboard on `0.0.0.0:8780`, including a Windows
-    Firewall rule for private networks;
+6. the Windows-hosted MuJoCo telemetry dashboard on `0.0.0.0:8780`, reading
+    the WSL simulator through localhost and adding a Windows Firewall rule for private networks;
 7. the Windows push-to-talk loop, Whisper.cpp, Ollama planning, gates, and actions.
 
 The telemetry dashboard is reachable from another PC at the Ethernet IPv4

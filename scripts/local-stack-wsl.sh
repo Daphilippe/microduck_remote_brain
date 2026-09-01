@@ -64,14 +64,29 @@ wait_for_gateway() {
     return 1
 }
 
-wait_for_telemetry() {
-    for _ in $(seq 1 40); do
-        if "$BRAIN_PYTHON" -c \
-            "import socket; s=socket.create_connection(('127.0.0.1', $TELEMETRY_PORT), 0.25); s.close()" \
-            2>/dev/null; then
+check_gateway() {
+    "$BRAIN_PYTHON" -c \
+        "from microduck_remote_brain.robotd import RobotdClient; c=RobotdClient(host='127.0.0.1', port=8765); c.connect(); c.subscribe(1); c.close()" \
+        2>/dev/null
+}
+
+check_body() {
+    "$BRAIN_PYTHON" -c \
+        "from microduck_remote_brain.body_oracle import TcpBodyOracle; o=TcpBodyOracle('127.0.0.1', 7801); o.connect(); o.read(); o.close()" \
+        2>/dev/null
+}
+
+start_runtime() {
+    for attempt in 1 2; do
+        if scripts/duck-sim && check_body; then
             return 0
         fi
-        sleep 0.25
+        echo "MuJoCo runtime startup attempt $attempt failed" >&2
+        scripts/duck-sim down >/dev/null 2>&1 || true
+        if [[ "$attempt" -lt 2 ]]; then
+            echo "retrying the complete runtime once" >&2
+            sleep 1
+        fi
     done
     return 1
 }
@@ -93,7 +108,7 @@ case "$ACTION" in
 
         export DUCK_SIM_VIEWER=1
         cd "$RUNTIME"
-        scripts/duck-sim
+        start_runtime
 
         mkdir -p "$STATE"
         stop_gateway
@@ -108,26 +123,17 @@ case "$ACTION" in
             exit 1
         fi
         stop_telemetry
-        setsid nohup "$BRAIN_PYTHON" -m microduck_remote_brain.telemetry_server \
-            --listen-host 0.0.0.0 --listen-port "$TELEMETRY_PORT" \
-            --simulator-host 127.0.0.1 --simulator-port 7801 \
-            > "$STATE/telemetry.log" 2>&1 &
-        echo "$!" > "$TELEMETRY_PID"
-        if ! wait_for_telemetry; then
-            cat "$STATE/telemetry.log" >&2
-            exit 1
-        fi
         trap - ERR
         ;;
     status)
         cd "$RUNTIME"
         scripts/duck-sim status
+        scripts/duck-sim ctl health >/dev/null
         scripts/duck-sim realtime
-        wait_for_gateway || {
-            echo "fake Wi-Fi gateway is not reachable" >&2
+        check_gateway || {
+            echo "fake Wi-Fi gateway does not answer robotd JSON-RPC" >&2
             exit 1
         }
-        "$BRAIN_PYTHON" -c "import socket; s=socket.create_connection(('127.0.0.1', $TELEMETRY_PORT), 1); s.close()"
         ;;
     stop)
         stop_gateway

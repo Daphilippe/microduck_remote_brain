@@ -25,7 +25,9 @@ does not reproduce MuJoCo dynamics or the production walking policy.
 ### Full MuJoCo simulation
 
 `scripts/local-stack.ps1` starts the production Rust runtime and MuJoCo in WSL2. WSLg renders the
-native simulator window. Windows runs Ollama, gamepad input, push-to-talk and the control panel.
+native simulator window. Windows runs Ollama, gamepad input, push-to-talk, the control panel and the
+telemetry HTTP server. Hosting HTTP on Windows is intentional: WSL2 localhost forwarding is not
+reliably reachable from another computer on the LAN.
 The TCP gateway on `127.0.0.1:8765` adapts the Unix `robotd` socket for Windows clients. The body
 server on `127.0.0.1:7801` provides state, ToF and the simulated head camera.
 
@@ -37,7 +39,7 @@ Install:
 
 1. Windows 11 or a current Windows 10 release with WSL2 support;
 2. WSL2 with Ubuntu 22.04 and WSLg;
-3. Docker Desktop using the WSL2 backend;
+3. Docker Desktop using the WSL2 backend, only for the standalone Compose mode;
 4. Python 3.12 and `uv` on Windows;
 5. Ollama on Windows for autonomous inference;
 6. Git and PowerShell 7 or Windows PowerShell 5.1.
@@ -117,7 +119,7 @@ The startup sequence is:
 2. verify or start Ollama on Windows;
 3. start MuJoCo and `robotd` under WSL2;
 4. expose `robotd` through the localhost TCP adapter;
-5. start telemetry on port `8780`;
+5. start telemetry on Windows port `8780`, reading the WSL body server through localhost;
 6. start the gamepad and optional voice clients;
 7. run autonomy separately with `microduck.sim.toml`.
 
@@ -143,6 +145,8 @@ Get-NetConnectionProfile
 The launcher creates a Windows Firewall rule for private profiles. Do not enable that rule on a
 public network. A yellow **Disconnected** status means the web server is alive but the simulator is
 not returning valid data; it no longer displays fabricated default telemetry as a connected robot.
+The launcher validates both `http://127.0.0.1:8780/api/health` and the selected LAN address before it
+prints **Network telemetry**.
 
 ## Configuration profiles
 
@@ -178,8 +182,10 @@ wsl.exe -d Ubuntu-22.04 -- bash -lc `
 
 ```powershell
 .\scripts\local-stack.ps1 -Action status
-wsl.exe -d Ubuntu-22.04 -- cat ~/.cache/duck-sim-remote-brain/telemetry.log
+Get-Content .\.local\telemetry-error.log
 Test-NetConnection 127.0.0.1 -Port 7801
+Invoke-RestMethod http://127.0.0.1:8780/api/health
+Invoke-RestMethod http://<windows-ip>:8780/api/health
 ```
 
 ### Ollama is slow

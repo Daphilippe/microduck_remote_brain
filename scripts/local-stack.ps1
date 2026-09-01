@@ -3,7 +3,7 @@ param(
     [ValidateSet("start", "status", "text", "stop")]
     [string]$Action = "start",
     [string]$Scene = "apartment",
-    [string]$OllamaModel = "ministral-3-14b:latest",
+    [string]$OllamaModel = "qwen3-vl:8b",
     [string]$Microphone = "1",
     [ValidateSet("auto", "gamepad", "keyboard")]
     [string]$Trigger = "auto",
@@ -24,6 +24,7 @@ $WorkspaceWsl = "/mnt/$Drive$RelativeWorkspace"
 $Brain = "$WorkspaceWsl/microduck_remote_brain"
 $Distro = "Ubuntu-22.04"
 $LocalState = Join-Path $Project ".local"
+$StopRequest = Join-Path $LocalState "stop-requested"
 
 function Invoke-WslStack {
     param(
@@ -73,17 +74,54 @@ function Show-TelemetryEndpoint {
     $LanAddress = Get-LanAddress
     Ensure-TelemetryFirewallRule
     for ($Attempt = 0; $Attempt -lt 60; $Attempt++) {
-        if (Test-TcpPort "127.0.0.1" $TelemetryPort) { break }
+        try {
+            $Health = Invoke-RestMethod -Uri "http://127.0.0.1:$TelemetryPort/api/health" -TimeoutSec 2
+            if ($Health.status -eq "ok") { break }
+        }
+        catch {
+        }
         [System.Threading.Thread]::Sleep(250)
     }
-    if (-not (Test-TcpPort "127.0.0.1" $TelemetryPort)) {
-        Write-Warning "Telemetry startup log from WSL:"
-        & wsl.exe -d $Distro -- /bin/cat "/home/$env:USERNAME/.cache/duck-sim-remote-brain/telemetry.log" 2>$null
+    try {
+        $Health = Invoke-RestMethod -Uri "http://127.0.0.1:$TelemetryPort/api/health" -TimeoutSec 2
+    }
+    catch {
+        Write-Warning "Telemetry startup log:"
+        Get-Content (Join-Path $LocalState "telemetry-error.log") -ErrorAction SilentlyContinue
         throw "Telemetry dashboard did not become reachable on port $TelemetryPort"
     }
+    if ($Health.status -ne "ok") { throw "Telemetry dashboard is not healthy" }
     Write-Host "MuJoCo telemetry: http://localhost:$TelemetryPort"
-    if ($LanAddress) { Write-Host "Network telemetry: http://${LanAddress}:$TelemetryPort" }
+    if ($LanAddress) {
+        try {
+            $LanHealth = Invoke-RestMethod -Uri "http://${LanAddress}:$TelemetryPort/api/health" -TimeoutSec 2
+            if ($LanHealth.status -ne "ok") { throw "unexpected health response" }
+        }
+        catch {
+            throw "Telemetry is local but not reachable through http://${LanAddress}:$TelemetryPort"
+        }
+        Write-Host "Network telemetry: http://${LanAddress}:$TelemetryPort"
+    }
     else { Write-Warning "No Ethernet IPv4 address was detected; telemetry is only advertised locally." }
+}
+
+function Start-TelemetryServer {
+    New-Item -ItemType Directory -Force -Path $LocalState | Out-Null
+    $PidFile = Join-Path $LocalState "telemetry.pid"
+    Stop-ManagedPythonProcess -PidFile $PidFile -CommandMarker "microduck_remote_brain.telemetry_server"
+    $Start = @{
+        FilePath = "$Project\.venv\Scripts\python.exe"
+        ArgumentList = @(
+            "-u", "-m", "microduck_remote_brain.telemetry_server",
+            "--simulator-host", "127.0.0.1", "--simulator-port", "7801",
+            "--listen-host", "0.0.0.0", "--listen-port", "$TelemetryPort"
+        )
+        RedirectStandardOutput = Join-Path $LocalState "telemetry.log"
+        RedirectStandardError = Join-Path $LocalState "telemetry-error.log"
+        PassThru = $true
+    }
+    $Process = Start-Process @Start
+    Set-Content -Path $PidFile -Value $Process.Id
 }
 
 function Stop-ManagedPythonProcess {
@@ -94,17 +132,42 @@ function Stop-ManagedPythonProcess {
     if (-not (Test-Path $PidFile)) {
         return
     }
-    $ManagedPid = [int](Get-Content $PidFile)
-    Remove-Item $PidFile -Force
+    try {
+        $ManagedPid = [int](Get-Content $PidFile -ErrorAction Stop)
+    }
+    catch [System.Management.Automation.ItemNotFoundException] {
+        return
+    }
+    Remove-Item $PidFile -Force -ErrorAction SilentlyContinue
     $Managed = Get-CimInstance Win32_Process -Filter "ProcessId = $ManagedPid" -ErrorAction SilentlyContinue
     if ($null -eq $Managed) {
         return
     }
-    $ExpectedPython = (Resolve-Path "$Project\.venv\Scripts\python.exe").Path
-    $SameExecutable = $Managed.ExecutablePath -eq $ExpectedPython
+    $PythonLauncher = (Resolve-Path "$Project\.venv\Scripts\python.exe").Path
+    $ExpectedPython = (& $PythonLauncher -c "import sys; print(sys._base_executable)" |
+        Select-Object -Last 1).Trim()
+    $SameExecutable = $Managed.ExecutablePath -in @($PythonLauncher, $ExpectedPython)
     $SameCommand = $Managed.CommandLine -like "*$CommandMarker*"
     if ($SameExecutable -and $SameCommand) {
-        Stop-Process -Id $ManagedPid -ErrorAction SilentlyContinue
+        $ManagedPids = @($ManagedPid)
+        $Related = Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
+            Where-Object {
+                ($_.ParentProcessId -eq $ManagedPid -or $_.ProcessId -eq $Managed.ParentProcessId) -and
+                $_.ExecutablePath -in @($PythonLauncher, $ExpectedPython) -and
+                $_.CommandLine -like "*$CommandMarker*"
+            }
+        $ManagedPids += @($Related | ForEach-Object { [int]$_.ProcessId })
+        $ManagedPids = @($ManagedPids | Sort-Object -Unique)
+        foreach ($ProcessId in $ManagedPids) {
+            Stop-Process -Id $ProcessId -Force -ErrorAction SilentlyContinue
+        }
+        Wait-Process -Id $ManagedPids -Timeout 5 -ErrorAction SilentlyContinue
+        $Remaining = @($ManagedPids | Where-Object {
+            $null -ne (Get-Process -Id $_ -ErrorAction SilentlyContinue)
+        })
+        if ($Remaining.Count -ne 0) {
+            throw "Managed process $($Remaining -join ', ') for $CommandMarker did not stop"
+        }
     }
     else {
         Write-Warning "PID $ManagedPid no longer belongs to $CommandMarker; it was not stopped."
@@ -173,13 +236,26 @@ function Ensure-Ollama {
     }
 }
 
+function Assert-OllamaModel {
+    $Models = (Invoke-RestMethod -Uri "http://127.0.0.1:11434/api/tags" -TimeoutSec 3).models |
+        ForEach-Object { $_.name }
+    if ($OllamaModel -notin $Models) {
+        throw "Ollama model '$OllamaModel' is not installed. Run: ollama pull $OllamaModel"
+    }
+}
+
 function Stop-ManagedOllama {
     $PidFile = Join-Path $Project ".local\ollama.pid"
     if (-not (Test-Path $PidFile)) {
         return
     }
-    $ManagedPid = [int](Get-Content $PidFile)
-    Remove-Item $PidFile -Force
+    try {
+        $ManagedPid = [int](Get-Content $PidFile -ErrorAction Stop)
+    }
+    catch [System.Management.Automation.ItemNotFoundException] {
+        return
+    }
+    Remove-Item $PidFile -Force -ErrorAction SilentlyContinue
     $Managed = Get-CimInstance Win32_Process -Filter "ProcessId = $ManagedPid" -ErrorAction SilentlyContinue
     if ($null -eq $Managed) {
         return
@@ -194,9 +270,12 @@ function Stop-ManagedOllama {
 }
 
 if ($Action -eq "stop") {
+    New-Item -ItemType Directory -Force -Path $LocalState | Out-Null
+    Set-Content -Path $StopRequest -Value "stop"
     Stop-ManagedPythonProcess -PidFile (Join-Path $Project ".local\panel.pid") -CommandMarker "microduck_remote_brain.control_panel"
     Stop-ManagedPythonProcess -PidFile (Join-Path $Project ".local\voice.pid") -CommandMarker "microduck_remote_brain.voice_cli"
     Stop-ManagedPythonProcess -PidFile (Join-Path $Project ".local\gamepad.pid") -CommandMarker "microduck_remote_brain.gamepad_cli"
+    Stop-ManagedPythonProcess -PidFile (Join-Path $Project ".local\telemetry.pid") -CommandMarker "microduck_remote_brain.telemetry_server"
     Stop-ManagedOllama
     Invoke-WslStack -StackAction stop
     Write-Host "Local MicroDuck stack stopped."
@@ -209,7 +288,10 @@ if ($Action -eq "status") {
         throw "Fake Wi-Fi gateway is not reachable on 127.0.0.1:8765"
     }
     Ensure-Ollama
-    Write-Host "Fake Wi-Fi and Ollama are reachable."
+    Assert-OllamaModel
+    $Health = Invoke-RestMethod -Uri "http://127.0.0.1:$TelemetryPort/api/health" -TimeoutSec 2
+    if ($Health.status -ne "ok") { throw "Telemetry dashboard is not healthy" }
+    Write-Host "Fake Wi-Fi, telemetry, and Ollama are reachable."
     Show-GamepadStatus
     exit 0
 }
@@ -217,11 +299,13 @@ if ($Action -eq "status") {
 Write-Host "Synchronizing the PC-side brain..."
 $StackStarted = $false
 try {
+Remove-Item $StopRequest -Force -ErrorAction SilentlyContinue
 & uv sync --project $Project --extra voice --dev
 if ($LASTEXITCODE -ne 0) {
     throw "Remote Brain dependency synchronization failed"
 }
 Ensure-Ollama
+Assert-OllamaModel
 
 Write-Host "Starting the visual MicroDuck world, robot runtime, audio, and fake Wi-Fi..."
 Invoke-WslStack -StackAction start
@@ -236,6 +320,7 @@ for ($Attempt = 0; $Attempt -lt 20; $Attempt++) {
 if (-not (Test-TcpPort "127.0.0.1" 8765)) {
     throw "Fake Wi-Fi gateway did not become reachable"
 }
+Start-TelemetryServer
 Show-TelemetryEndpoint
 
 Write-Host "Visual simulator: ready"
@@ -311,8 +396,13 @@ else {
 }
 
 & "$Project\.venv\Scripts\python.exe" @VoiceArguments
-if ($LASTEXITCODE -ne 0) {
-    throw "Voice pipeline failed with exit code $LASTEXITCODE"
+$VoiceExitCode = $LASTEXITCODE
+if (Test-Path $StopRequest) {
+    Remove-Item $StopRequest -Force -ErrorAction SilentlyContinue
+    exit 0
+}
+if ($VoiceExitCode -ne 0) {
+    throw "Voice pipeline failed with exit code $VoiceExitCode"
 }
 exit 0
 }
@@ -320,6 +410,7 @@ catch {
     Stop-ManagedPythonProcess -PidFile (Join-Path $Project ".local\panel.pid") -CommandMarker "microduck_remote_brain.control_panel"
     Stop-ManagedPythonProcess -PidFile (Join-Path $Project ".local\voice.pid") -CommandMarker "microduck_remote_brain.voice_cli"
     Stop-ManagedPythonProcess -PidFile (Join-Path $Project ".local\gamepad.pid") -CommandMarker "microduck_remote_brain.gamepad_cli"
+    Stop-ManagedPythonProcess -PidFile (Join-Path $Project ".local\telemetry.pid") -CommandMarker "microduck_remote_brain.telemetry_server"
     Stop-ManagedOllama
     if ($StackStarted) {
         try {
