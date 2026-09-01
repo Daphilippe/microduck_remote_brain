@@ -115,7 +115,8 @@ function Start-TelemetryServer {
         ArgumentList = @(
             "-u", "-m", "microduck_remote_brain.telemetry_server",
             "--simulator-host", "127.0.0.1", "--simulator-port", "7801",
-            "--listen-host", "0.0.0.0", "--listen-port", "$TelemetryPort"
+            "--listen-host", "0.0.0.0", "--listen-port", "$TelemetryPort",
+            "--autonomy-status-file", (Join-Path $LocalState "autonomy-state.json")
         )
         RedirectStandardOutput = Join-Path $LocalState "telemetry.log"
         RedirectStandardError = Join-Path $LocalState "telemetry-error.log"
@@ -382,14 +383,21 @@ if (-not $NoAutonomy) {
             "-u", "-m", "microduck_remote_brain.autonomous_cli",
             "--config", (Join-Path $Project "config\microduck.sim.toml"),
             "--pause-file", $ManualActive,
-            "--activity-file", $AutonomyActive
+            "--activity-file", $AutonomyActive,
+            "--status-file", (Join-Path $LocalState "autonomy-state.json"),
+            "--pid-file", $AutonomyPidFile
         )
         RedirectStandardOutput = Join-Path $LocalState "autonomy.log"
         RedirectStandardError = Join-Path $LocalState "autonomy-error.log"
         PassThru = $true
     }
-    $AutonomyProcess = Start-Process @AutonomyStart
-    Set-Content -Path $AutonomyPidFile -Value $AutonomyProcess.Id
+    Start-Process @AutonomyStart | Out-Null
+    for ($Attempt = 0; $Attempt -lt 40 -and -not (Test-Path $AutonomyPidFile); $Attempt++) {
+        [System.Threading.Thread]::Sleep(100)
+    }
+    if (-not (Test-Path $AutonomyPidFile)) {
+        throw "Autonomous brain did not publish its process id"
+    }
 }
 Show-AutonomyStatus
 

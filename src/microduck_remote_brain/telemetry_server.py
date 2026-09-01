@@ -9,17 +9,20 @@ import threading
 import time
 from collections.abc import Sequence
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 DASHBOARD = """<!doctype html>
 <html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>MicroDuck telemetry</title><style>
 :root{color-scheme:dark;font:14px system-ui,sans-serif}body{margin:0;background:#10151b;color:#e8edf2}main{max-width:1200px;margin:auto;padding:20px}h1{font-size:22px;margin:0 0 4px}p{color:#aab6c2}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}.card{background:#19212a;border:1px solid #30404e;border-radius:8px;padding:14px}.video{grid-column:span 2}h2{font-size:15px;margin:0 0 12px;color:#72d6c9}.camera{display:block;width:100%;aspect-ratio:4/3;object-fit:contain;background:#050708}.metrics{display:grid;grid-template-columns:1fr 1fr;gap:8px}.metric{background:#111820;padding:8px}.metric b{display:block;font-size:18px}.metric small{color:#93a3b1}.joints{display:grid;grid-template-columns:1fr 1fr;gap:5px}.joint{display:flex;justify-content:space-between;background:#111820;padding:5px 7px}.tof{display:grid;grid-template-columns:repeat(8,1fr);gap:3px}.zone{aspect-ratio:1;display:grid;place-items:center;font-size:10px;color:#061014;border-radius:2px}.muted{color:#aab6c2}.ok{color:#72d6c9}.warning{color:#f4bf68}code{color:#b9d9ff}@media(max-width:700px){.video{grid-column:span 1}}
-</style></head><body><main><h1>MicroDuck · télémétrie</h1><p id="updated">Connexion...</p><section class="grid"><article class="card video"><h2>Caméra tête</h2><img class="camera" src="/api/camera/stream" alt="Flux de la caméra tête du MicroDuck"><p class="muted">Vue embarquée fournie par la source de simulation active.</p></article><article class="card"><h2>État du robot</h2><div id="metrics" class="metrics"></div></article><article class="card"><h2>IMU</h2><div id="imu" class="metrics"></div></article><article class="card"><h2>Articulations</h2><div id="joints" class="joints"></div></article><article class="card"><h2>ToF / lidar 8×8</h2><div id="tof" class="tof"></div><p class="muted">Distances en mm, mise à jour à 15 Hz selon le modèle du VL53L5CX.</p></article></section></main><script>
+</style></head><body><main><h1>MicroDuck · télémétrie</h1><p id="updated">Connexion...</p><section class="grid"><article class="card video"><h2>Caméra tête</h2><img class="camera" src="/api/camera/stream" alt="Flux de la caméra tête du MicroDuck"><p class="muted">Vue embarquée fournie par la source de simulation active.</p></article><article class="card"><h2>Persona autonome</h2><div id="persona" class="metrics"></div><p id="persona-observation" class="muted"></p></article><article class="card"><h2>État du robot</h2><div id="metrics" class="metrics"></div></article><article class="card"><h2>IMU</h2><div id="imu" class="metrics"></div></article><article class="card"><h2>Articulations</h2><div id="joints" class="joints"></div></article><article class="card"><h2>ToF / lidar 8×8</h2><div id="tof" class="tof"></div><p class="muted">Distances en mm, mise à jour à 15 Hz selon le modèle du VL53L5CX.</p></article></section></main><script>
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const metric=(name,value,unit='')=>`<div class="metric"><small>${esc(name)}</small><b>${esc(value)} <small>${esc(unit)}</small></b></div>`;
 async function checked(path){const response=await fetch(path,{cache:'no-store'});if(!response.ok){const body=await response.json().catch(()=>({}));throw new Error(body.error||`HTTP ${response.status}`)}return response.json()}
-async function refresh(){try{const [state,tof]=await Promise.all([checked('/api/state'),checked('/api/tof')]);const imu=state.imu||{};
+async function refresh(){try{const [state,tof,persona]=await Promise.all([checked('/api/state'),checked('/api/tof'),checked('/api/autonomy')]);const imu=state.imu||{};
 document.querySelector('#updated').innerHTML='<span class="ok">Connecté</span> · sim_time '+Number(state.sim_time||0).toFixed(2)+' s · trunk '+(state.trunk||[]).map(x=>Number(x).toFixed(3)).join(', ');
+document.querySelector('#persona').innerHTML=[metric('État',persona.state||'inconnu'),metric('Action',(persona.actions||[]).join(' + ')||'—'),metric('Message',persona.message||'—'),metric('Âge',Number(persona.age_seconds||0).toFixed(0),'s')].join('');
+document.querySelector('#persona-observation').textContent=persona.observation||'Aucune observation terminée.';
 document.querySelector('#metrics').innerHTML=[metric('Trunk Z',Number(state.trunk_z||0).toFixed(3),'m'),metric('Tension',Number(state.volts||7.4).toFixed(2),'V'),metric('Vitesse X',Number((state.base_velocity||[0])[0]||0).toFixed(3),'m/s'),metric('Température',Number((state.temps_c||[32])[0]||32).toFixed(1),'°C')].join('');
 document.querySelector('#imu').innerHTML=[metric('Gravité', (imu.gravity||[]).map(x=>Number(x).toFixed(2)).join(', ')),metric('Gyroscope',(imu.gyro||[]).map(x=>Number(x).toFixed(2)).join(', ')),metric('Quaternion',(imu.quat||[]).map(x=>Number(x).toFixed(2)).join(', '))].join('');
 document.querySelector('#joints').innerHTML=(state.positions||[]).map((v,i)=>`<div class="joint"><span>J${i}</span><code>${Number(v).toFixed(3)} rad</code></div>`).join('');
@@ -30,6 +33,32 @@ refresh();setInterval(refresh,500);
 
 
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
+MAX_STATUS_BYTES = 64 * 1024
+
+
+def read_autonomy_status(path: Path | None) -> dict[str, object]:
+    if path is None or not path.is_file():
+        return {"state": "stopped", "message": "Persona non démarré", "age_seconds": 0.0}
+    if path.stat().st_size > MAX_STATUS_BYTES:
+        raise RuntimeError("autonomy status exceeds the size limit")
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as error:
+        raise RuntimeError("autonomy status is unreadable") from error
+    if not isinstance(value, dict):
+        raise RuntimeError("autonomy status must be an object")
+    updated_at = value.get("updated_at")
+    if not isinstance(updated_at, int | float):
+        raise RuntimeError("autonomy status has no timestamp")
+    result: dict[str, object] = dict(value)
+    result["age_seconds"] = max(0.0, time.time() - float(updated_at))
+    if result["age_seconds"] > 300:
+        result["state"] = "stale"
+        result["message"] = "Aucune mise à jour récente du persona"
+    observation = result.get("observation")
+    if isinstance(observation, str):
+        result["observation"] = observation[:500]
+    return result
 
 
 def read_simulator(host: str, port: int, operation: str) -> dict[str, object]:
@@ -118,6 +147,7 @@ class Handler(BaseHTTPRequestHandler):
     simulator_host = "127.0.0.1"
     simulator_port = 7801
     cache = SimulatorCache(simulator_host, simulator_port)
+    autonomy_status_file: Path | None = None
 
     def do_GET(self) -> None:  # noqa: N802
         try:
@@ -137,6 +167,8 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path == "/api/health":
                 self.cache.get("state", 0.5)
                 self._send_json({"status": "ok", "simulator": "connected"})
+            elif self.path == "/api/autonomy":
+                self._send_json(read_autonomy_status(self.autonomy_status_file))
             else:
                 self._send_json({"error": "not found"}, 404)
         except (OSError, RuntimeError, ValueError) as error:
@@ -185,10 +217,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--simulator-port", type=int, default=7801)
     parser.add_argument("--listen-host", default="0.0.0.0")
     parser.add_argument("--listen-port", type=int, default=8780)
+    parser.add_argument("--autonomy-status-file", type=Path)
     args = parser.parse_args(argv)
     Handler.simulator_host = args.simulator_host
     Handler.simulator_port = args.simulator_port
     Handler.cache = SimulatorCache(args.simulator_host, args.simulator_port)
+    Handler.autonomy_status_file = args.autonomy_status_file
     with ThreadingHTTPServer((args.listen_host, args.listen_port), Handler) as server:
         print(f"telemetry dashboard listening on {args.listen_host}:{args.listen_port}", flush=True)
         server.serve_forever()
