@@ -128,7 +128,12 @@ The startup sequence is:
 
 ```powershell
 Get-Content .\.local\autonomy.log -Wait
+Get-Content .\.local\autonomy-state.json
 ```
+
+The **Persona autonome** dashboard section shows whether MicroDuck is observing, deciding, acting,
+idle, paused or degraded, plus the last completed observation and action. The PID shown by
+`-Action status` comes from the real Python worker rather than the virtual-environment launcher.
 
 Stop every managed process with:
 

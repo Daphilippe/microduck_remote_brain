@@ -114,3 +114,26 @@ def test_persona_can_choose_a_bounded_double_sound(monkeypatch) -> None:
         {"tag": "chirp"},
         {"tag": "chirp"},
     ]
+
+
+def test_persona_receives_bounded_recent_behavior_context(monkeypatch) -> None:
+    response = Response(
+        json.dumps(
+            {"message": {"content": '{"action":"coo","sound_pattern":"single"}'}}
+        ).encode()
+    )
+    captured: dict[str, Any] = {}
+
+    def urlopen(request, **_kwargs):
+        captured.update(json.loads(request.data))
+        return response
+
+    monkeypatch.setattr("microduck_remote_brain.autonomy.urllib.request.urlopen", urlopen)
+
+    OllamaAutonomousPlanner("qwen").plan(
+        "The floor is clear.",
+        recent_behaviors=("coo", "stop+coo"),
+    )
+
+    content = captured["messages"][0]["content"]
+    assert "Recent behaviors, oldest first: coo, stop+coo" in content

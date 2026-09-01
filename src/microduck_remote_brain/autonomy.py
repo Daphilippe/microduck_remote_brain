@@ -37,7 +37,7 @@ class OllamaAutonomousPlanner:
         self._endpoint = endpoint
         self._timeout = timeout
 
-    def plan(self, observation: str) -> Plan:
+    def plan(self, observation: str, *, recent_behaviors: tuple[str, ...] = ()) -> Plan:
         schema = {
             "type": "object",
             "properties": {
@@ -47,6 +47,11 @@ class OllamaAutonomousPlanner:
             "required": ["action", "sound_pattern"],
             "additionalProperties": False,
         }
+        recent_context = (
+            "\n\nRecent behaviors, oldest first: " + ", ".join(recent_behaviors)
+            if recent_behaviors
+            else ""
+        )
         payload = {
             "model": self._model,
             "stream": False,
@@ -55,7 +60,9 @@ class OllamaAutonomousPlanner:
             "messages": [
                 {
                     "role": "user",
-                    "content": f"{self._prompt}\n\nVisual observation:\n{observation}",
+                    "content": (
+                        f"{self._prompt}\n\nVisual observation:\n{observation}{recent_context}"
+                    ),
                 }
             ],
             "options": {"temperature": 0, "num_predict": 64},

@@ -35,6 +35,19 @@ pattern emits the same allowed sound twice; the model cannot set volume, pitch, 
 raw sound parameters. The code converts the choice to normal `robot.sound` steps, and existing gates
 validate every step before it reaches `robotd`.
 
+The decision prompt receives only the three most recent behavior summaries from the current process.
+This small session memory helps avoid repeating the same expression without becoming a durable or
+unbounded personality store. It never expands the configured action vocabulary.
+
+The telemetry dashboard exposes the live persona state:
+
+- `observing`: the vision model is reading the current head-camera frame;
+- `deciding`: the persona model is selecting one allowed behavior;
+- `acting`: the gated plan is being executed;
+- `idle`: the previous behavior completed and its action remains visible;
+- `paused`: voice or another manual control currently has priority;
+- `degraded` or `stale`: the latest cycle failed or the worker stopped updating.
+
 Edit the prompt or sound list in the selected profile, then restart the autonomous process. Unknown
 sound tags and incomplete Whisper configuration are rejected at startup.
 

@@ -155,7 +155,8 @@ The launcher does not require activating the Python virtual environment
 manually. Use `-TelemetryPort` when port `8780` is already occupied.
 `-NoVoice` keeps the autonomous personality running; use `-NoAutonomy` only when a fully manual
 simulation is required. Voice, autonomous actions and gamepad commands use separate activity files
-so they do not command the robot simultaneously.
+so they do not command the robot simultaneously. The telemetry dashboard's **Persona autonome**
+section shows each live observe/decide/act cycle and the last completed behavior.
 
 The TCP gateway is intentionally simulation-only and has no authentication. It
 creates a real network boundary on one PC without pretending to implement RF.
