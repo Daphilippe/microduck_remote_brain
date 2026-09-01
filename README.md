@@ -26,6 +26,25 @@ On Windows PowerShell, use `.\scripts\install.ps1` followed by
 `uv run pytest`. Add `--voice` or `-Voice` only when microphone capture is
 needed.
 
+For the complete Windows, WSL2 and Docker workflow, read
+[docs/WINDOWS_WSL.md](docs/WINDOWS_WSL.md). The provider boundaries and deferred production work are
+documented in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/TODO.md](docs/TODO.md).
+
+## Standalone contract simulation
+
+The repository includes a dependency-free protocol simulator and a Docker Compose stack. It emulates
+the external `robotd`, body, ToF, IMU and camera contracts without requiring the Rust or MuJoCo
+repositories:
+
+```powershell
+.\scripts\standalone-stack.ps1 start
+Start-Process http://localhost:8780
+.\scripts\standalone-stack.ps1 stop
+```
+
+This is intended for repeatable integration and migration testing. Use the full local simulation
+below when MuJoCo physics, the production policy and WSLg rendering are required.
+
 ## M1 execution
 
 ```bash
@@ -70,14 +89,25 @@ The script starts components in this order:
 3. the production `robotd` runtime connected to MuJoCo through `RemoteIo`;
 4. simulated ToF and the duck voice bank through WSLg PulseAudio;
 5. a TCP gateway on `127.0.0.1:8765` representing the Wi-Fi hop;
-6. the browser viewer on `0.0.0.0:5173`, including a Windows Firewall rule for
-    private networks;
+6. the MuJoCo telemetry dashboard on `0.0.0.0:8780`, including a Windows
+    Firewall rule for private networks;
 7. the Windows push-to-talk loop, Whisper.cpp, Ollama planning, gates, and actions.
 
-The browser viewer is reachable from another PC at the Ethernet IPv4 address
-printed by the launcher, for example `http://<lan-ip>:5173`. Both PCs must
-be on the same private network. The native MuJoCo window remains local to the
+The telemetry dashboard is reachable from another PC at the Ethernet IPv4
+address printed by the launcher, for example `http://<lan-ip>:8780`. It reads
+the live MuJoCo protocol and displays joint positions and velocities, currents,
+trunk pose, simulation time, IMU gravity/gyro/quaternion, nominal voltage and
+temperatures, plus the simulated VL53L5CX 8x8 ToF frame. Both PCs must be on the
+same private network. The native MuJoCo window remains local to the
 Windows/WSLg session; it is not a network video stream.
+
+The MuJoCo model's `head_camera` is rendered at 640x480 and 10 fps. The autonomous simulation
+profile and dashboard both consume this camera; the PC webcam is not used by that profile. The
+dashboard exposes it as MJPEG at `/api/camera/stream` and as a single JPEG at
+`/api/camera.jpg`. Rendering uses a private MuJoCo state copy so camera work
+does not hold the physics lock or reduce `robotd`'s 50 Hz control rate. This
+MJPEG transport is for local simulation; the physical MicroDuck is expected to
+use the hardware H.264/WebRTC path provided by `mediad`.
 
 The controller mapping matches `padd`:
 
@@ -119,9 +149,8 @@ Useful commands:
 .\scripts\local-stack.ps1 -Action stop
 ```
 
-The launcher installs missing Node dependencies automatically and does not
-require activating the Python virtual environment manually. Use `-ViewerPort`
-when port `5173` is already occupied.
+The launcher does not require activating the Python virtual environment
+manually. Use `-TelemetryPort` when port `8780` is already occupied.
 
 The TCP gateway is intentionally simulation-only and has no authentication. It
 creates a real network boundary on one PC without pretending to implement RF.
