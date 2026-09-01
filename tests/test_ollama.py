@@ -44,6 +44,26 @@ def test_planner_parses_structured_steps_and_adds_feedback(monkeypatch) -> None:
     assert plan.steps[-1].arguments == {"tag": "chirp"}
 
 
+def test_planner_recovers_qwen_plan_from_thinking(monkeypatch) -> None:
+    generated = {
+        "steps": [{"id": "greet", "tool": "sound", "arguments": {"tag": "greet"}}],
+        "requires_confirmation": False,
+    }
+    response = Response(
+        json.dumps(
+            {"message": {"content": "", "thinking": json.dumps(generated)}}
+        ).encode()
+    )
+    monkeypatch.setattr(
+        "microduck_remote_brain.ollama.urllib.request.urlopen",
+        lambda *_args, **_kwargs: response,
+    )
+
+    plan = OllamaPlanner("qwen3-vl:8b").plan("make a friendly sound")
+
+    assert plan.steps[0].arguments == {"tag": "greet"}
+
+
 def test_planner_sends_visual_observation_as_untrusted_autonomous_context(monkeypatch) -> None:
     generated = {
         "steps": [{"id": "wait", "tool": "sound", "arguments": {"tag": "coo"}}],

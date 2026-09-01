@@ -126,9 +126,10 @@ class OllamaPlanner:
             ) from error
 
         try:
-            content = result["message"]["content"]
+            message = result["message"]
+            content = message.get("content") or message.get("thinking")
             generated = json.loads(content)
-        except (KeyError, TypeError, json.JSONDecodeError) as error:
+        except (AttributeError, KeyError, TypeError, json.JSONDecodeError) as error:
             raise ExecutionError(
                 ExecutionReason.ROBOT_PROTOCOL, "Ollama returned an invalid structured plan"
             ) from error
