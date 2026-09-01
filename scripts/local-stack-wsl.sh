@@ -4,6 +4,7 @@ set -euo pipefail
 ACTION="${1:?action is required}"
 SCENE="${2:-apartment}"
 WORKSPACE="${3:-/mnt/f/Microduck}"
+TELEMETRY_PORT="${4:-8780}"
 RUNTIME="$WORKSPACE/.worktrees/microduck-sim"
 SIMULATION="$WORKSPACE/.worktrees/microduck-rl-sim"
 BRAIN="$WORKSPACE/microduck_remote_brain"
@@ -31,12 +32,15 @@ stop_gateway() {
 }
 
 stop_telemetry() {
-    [[ -f "$TELEMETRY_PID" ]] || return 0
-    pid="$(tr -dc '0-9' < "$TELEMETRY_PID")"
-    rm -f "$TELEMETRY_PID"
-    [[ -n "$pid" && -r "/proc/$pid/cmdline" ]] || return 0
-    tr '\0' ' ' < "/proc/$pid/cmdline" | grep -q telemetry_server || return 0
-    kill "$pid" 2>/dev/null || true
+    if [[ -f "$TELEMETRY_PID" ]]; then
+        pid="$(tr -dc '0-9' < "$TELEMETRY_PID")"
+        rm -f "$TELEMETRY_PID"
+        if [[ -n "$pid" && -r "/proc/$pid/cmdline" ]] &&
+            tr '\0' ' ' < "/proc/$pid/cmdline" | grep -q telemetry_server; then
+            kill "$pid" 2>/dev/null || true
+        fi
+    fi
+    pkill -f '[m]icroduck_remote_brain.telemetry_server' 2>/dev/null || true
 }
 
 rollback_start() {
@@ -52,6 +56,18 @@ wait_for_gateway() {
     for _ in $(seq 1 40); do
         if "$BRAIN_PYTHON" -c \
             "import socket; s=socket.create_connection(('127.0.0.1', 8765), 0.25); s.close()" \
+            2>/dev/null; then
+            return 0
+        fi
+        sleep 0.25
+    done
+    return 1
+}
+
+wait_for_telemetry() {
+    for _ in $(seq 1 40); do
+        if "$BRAIN_PYTHON" -c \
+            "import socket; s=socket.create_connection(('127.0.0.1', $TELEMETRY_PORT), 0.25); s.close()" \
             2>/dev/null; then
             return 0
         fi
@@ -91,11 +107,16 @@ case "$ACTION" in
             cat "$STATE/wifi-gateway.log" >&2
             exit 1
         fi
+        stop_telemetry
         setsid nohup "$BRAIN_PYTHON" -m microduck_remote_brain.telemetry_server \
-            --listen-host 0.0.0.0 --listen-port 8780 \
+            --listen-host 0.0.0.0 --listen-port "$TELEMETRY_PORT" \
             --simulator-host 127.0.0.1 --simulator-port 7801 \
             > "$STATE/telemetry.log" 2>&1 &
         echo "$!" > "$TELEMETRY_PID"
+        if ! wait_for_telemetry; then
+            cat "$STATE/telemetry.log" >&2
+            exit 1
+        fi
         trap - ERR
         ;;
     status)
@@ -106,7 +127,7 @@ case "$ACTION" in
             echo "fake Wi-Fi gateway is not reachable" >&2
             exit 1
         }
-        "$BRAIN_PYTHON" -c "import socket; s=socket.create_connection(('127.0.0.1', 8780), 1); s.close()"
+        "$BRAIN_PYTHON" -c "import socket; s=socket.create_connection(('127.0.0.1', $TELEMETRY_PORT), 1); s.close()"
         ;;
     stop)
         stop_gateway

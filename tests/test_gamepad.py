@@ -4,7 +4,12 @@ from typing import Any
 
 import pytest
 
-from microduck_remote_brain.gamepad_cli import GamepadController, Mode, _walking_speed
+from microduck_remote_brain.gamepad_cli import (
+    GamepadController,
+    Mode,
+    _walking_speed,
+    _write_status,
+)
 from microduck_remote_brain.xinput import Button, GamepadState
 
 NO_BUTTONS = Button(0)
@@ -64,6 +69,38 @@ def test_releasing_sticks_sends_one_stop() -> None:
     controller.update(state())
 
     assert sum(call[0] == "stop" for call in robot.calls) == 1
+
+
+def test_transport_loss_resets_motion_without_replaying_held_button() -> None:
+    robot = FakeRobot()
+    controller = GamepadController(robot)  # type: ignore[arg-type]
+    held = state(buttons=Button.START, left_y=1.0)
+    controller.update(held)
+
+    controller.transport_lost(held)
+    controller.update(held)
+
+    assert controller.drive_active
+    assert sum(call[0] == "toggle_enable" for call in robot.calls) == 1
+
+
+def test_locked_status_file_does_not_stop_gamepad_client(
+    tmp_path: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    controller = GamepadController(FakeRobot())  # type: ignore[arg-type]
+    replace_attempts = 0
+
+    def locked_replace(_source: Any, _target: Any) -> None:
+        nonlocal replace_attempts
+        replace_attempts += 1
+        raise PermissionError("status file is temporarily locked")
+
+    monkeypatch.setattr(type(tmp_path), "replace", locked_replace)
+    monkeypatch.setattr("microduck_remote_brain.gamepad_cli.time.sleep", lambda _: None)
+
+    _write_status(tmp_path / "gamepad-state.json", connected=True, controller=controller)
+
+    assert replace_attempts == 3
 
 
 def test_expected_button_edges_dispatch_skills_and_modes() -> None:

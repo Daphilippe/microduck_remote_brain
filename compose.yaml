@@ -1,0 +1,62 @@
+services:
+  simulator:
+    build: .
+    command:
+      - microduck-standalone-sim
+      - --listen-host
+      - 0.0.0.0
+    ports:
+      - "127.0.0.1:8765:8765"
+      - "127.0.0.1:7801:7801"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import socket; socket.create_connection(('127.0.0.1', 7801), 2).close()"
+      interval: 2s
+      timeout: 3s
+      retries: 10
+      start_period: 2s
+    restart: unless-stopped
+
+  telemetry:
+    build: .
+    command:
+      - python
+      - -m
+      - microduck_remote_brain.telemetry_server
+      - --simulator-host
+      - simulator
+      - --simulator-port
+      - "7801"
+      - --listen-host
+      - 0.0.0.0
+      - --listen-port
+      - "8780"
+    depends_on:
+      simulator:
+        condition: service_healthy
+    ports:
+      - "8780:8780"
+    restart: unless-stopped
+
+  brain:
+    profiles: ["autonomy"]
+    build: .
+    command:
+      - microduck-autonomous
+      - --config
+      - /app/config/microduck.docker.toml
+    depends_on:
+      simulator:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./config:/app/config:ro
+      - brain-state:/app/.local
+    restart: unless-stopped
+
+volumes:
+  brain-state:

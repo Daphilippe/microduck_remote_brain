@@ -5,6 +5,7 @@ import select
 import socket
 import socketserver
 from collections.abc import Sequence
+from typing import cast
 
 
 class RobotdProxyHandler(socketserver.BaseRequestHandler):
@@ -16,7 +17,8 @@ class RobotdProxyHandler(socketserver.BaseRequestHandler):
             raise RuntimeError("the fake Wi-Fi gateway requires Unix domain sockets")
         upstream = socket.socket(unix_family, socket.SOCK_STREAM)
         try:
-            upstream.connect(self.server.robot_socket)
+            server = cast("ThreadedRobotdGateway", self.server)
+            upstream.connect(server.robot_socket)
             peers = (self.request, upstream)
             while True:
                 readable, _, _ = select.select(peers, (), (), 1.0)

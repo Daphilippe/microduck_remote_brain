@@ -32,6 +32,7 @@ microduck-brain = "microduck_remote_brain.cli:main"
 microduck-gamepad = "microduck_remote_brain.gamepad_cli:main"
 microduck-voice = "microduck_remote_brain.voice_cli:main"
 microduck-autonomous = "microduck_remote_brain.autonomous_cli:main"
+microduck-standalone-sim = "microduck_remote_brain.standalone_simulator:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

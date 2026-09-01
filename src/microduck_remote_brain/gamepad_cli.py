@@ -6,6 +6,7 @@ import time
 from enum import StrEnum
 from pathlib import Path
 
+from .executor import ExecutionError
 from .robotd import RobotdClient
 from .xinput import Button, GamepadState, XInputDevice
 
@@ -46,6 +47,12 @@ class GamepadController:
         self.drive_active = False
         self.last_twist = (0.0, 0.0, 0.0)
         self.previous = GamepadState(Button(0), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+    def transport_lost(self, state: GamepadState | None = None) -> None:
+        self.drive_active = False
+        self.last_twist = (0.0, 0.0, 0.0)
+        if state is not None:
+            self.previous = state
 
     def update(self, state: GamepadState) -> None:
         pressed = state.buttons & ~self.previous.buttons
@@ -127,62 +134,126 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
+def _write_status(
+    path: Path | None,
+    *,
+    connected: bool,
+    controller: GamepadController,
+    state: GamepadState | None = None,
+) -> None:
+    if path is None:
+        return
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        temporary = path.with_suffix(".tmp")
+        temporary.write_text(
+            json.dumps(
+                {
+                    "connected": connected,
+                    "updated_at": time.monotonic(),
+                    "mode": controller.mode,
+                    "left_x": state.left_x if state is not None else 0.0,
+                    "left_y": state.left_y if state is not None else 0.0,
+                    "vx": controller.last_twist[0],
+                    "vy": controller.last_twist[1],
+                    "vyaw": controller.last_twist[2],
+                },
+                allow_nan=False,
+            ),
+            encoding="utf-8",
+        )
+    except OSError:
+        return
+    for attempt in range(3):
+        try:
+            temporary.replace(path)
+            return
+        except PermissionError:
+            if attempt < 2:
+                time.sleep(0.01)
+        except OSError:
+            return
+
+
+def main(argv: list[str] | None = None) -> int:  # pylint: disable=too-many-statements
     args = _parser().parse_args(argv)
     device = XInputDevice(args.controller)
     robot = RobotdClient(host=args.robot_host, port=args.robot_port)
     controller = GamepadController(robot)
-    robot.connect()
-    connected = False
+    gamepad_connected = False
+    robot_connected = False
     next_status = 0.0
     print("Waiting for Xbox controller. Right stick press is reserved for push-to-talk.")
     try:
         while True:
             started = time.monotonic()
             if args.pause_file is not None and args.pause_file.exists():
-                if connected and controller.drive_active:
-                    robot.stop()
-                    controller.drive_active = False
+                if robot_connected and controller.drive_active:
+                    try:
+                        robot.stop()
+                    except (OSError, ExecutionError):
+                        robot.close()
+                        robot_connected = False
+                    controller.transport_lost()
                 time.sleep(0.05)
                 continue
+            if not robot_connected:
+                try:
+                    robot.connect()
+                except (OSError, ExecutionError):
+                    _write_status(
+                        args.status_file, connected=False, controller=controller
+                    )
+                    time.sleep(0.5)
+                    continue
+                robot_connected = True
+                print("Gamepad client connected to simulator.")
             try:
                 state = device.read()
             except RuntimeError:
-                if connected:
-                    connected = False
+                if gamepad_connected:
+                    gamepad_connected = False
                     print("Xbox controller disconnected; sending stop.")
-                    robot.stop()
+                    try:
+                        robot.stop()
+                    except (OSError, ExecutionError):
+                        robot.close()
+                        robot_connected = False
+                    controller.transport_lost()
+                _write_status(args.status_file, connected=False, controller=controller)
                 time.sleep(0.5)
                 continue
-            if not connected:
-                connected = True
+            if not gamepad_connected:
+                gamepad_connected = True
                 print("Xbox controller connected.")
-            controller.update(state)
+            try:
+                controller.update(state)
+            except (OSError, ExecutionError) as error:
+                print(f"Simulator connection lost; reconnecting: {error}")
+                robot.close()
+                robot_connected = False
+                controller.transport_lost(state)
+                _write_status(args.status_file, connected=False, controller=controller)
+                time.sleep(0.5)
+                continue
             if args.status_file is not None and started >= next_status:
-                args.status_file.parent.mkdir(parents=True, exist_ok=True)
-                temporary = args.status_file.with_suffix(".tmp")
-                temporary.write_text(
-                    json.dumps(
-                        {
-                            "connected": True,
-                            "mode": controller.mode,
-                            "left_x": state.left_x,
-                            "left_y": state.left_y,
-                            "vx": controller.last_twist[0],
-                            "vy": controller.last_twist[1],
-                            "vyaw": controller.last_twist[2],
-                        }
-                    ),
-                    encoding="utf-8",
+                _write_status(
+                    args.status_file,
+                    connected=True,
+                    controller=controller,
+                    state=state,
                 )
-                temporary.replace(args.status_file)
                 next_status = started + 0.1
             time.sleep(max(0.0, 1.0 / args.hz - (time.monotonic() - started)))
     except KeyboardInterrupt:
         return 0
     finally:
-        robot.stop()
-        robot.mouth(0.0)
+        if robot_connected:
+            try:
+                robot.stop()
+                robot.mouth(0.0)
+            except (OSError, ExecutionError):
+                pass
         robot.close()
 
 

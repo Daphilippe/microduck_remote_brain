@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import socket
 import subprocess
+import time
 import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
@@ -61,12 +62,17 @@ class ControlPanel:
     def _request(self, payload: dict[str, object]) -> dict[str, object]:
         with socket.create_connection((self._host, self._port), timeout=2.0) as connection:
             stream = connection.makefile("rw", encoding="utf-8", newline="\n")
-            stream.write(json.dumps({"op": "hello", "protocol": 1, "joints": 15}) + "\n")
+            stream.write(
+                json.dumps(
+                    {"op": "hello", "protocol": 1, "joints": 15}, allow_nan=False
+                )
+                + "\n"
+            )
             stream.flush()
             hello = json.loads(stream.readline())
             if hello.get("protocol") != 1:
                 raise RuntimeError("simulator protocol mismatch")
-            stream.write(json.dumps(payload) + "\n")
+            stream.write(json.dumps(payload, allow_nan=False) + "\n")
             stream.flush()
             return json.loads(stream.readline())
 
@@ -82,11 +88,19 @@ class ControlPanel:
             self._gamepad.set(f"Simulator error: {error}")
 
     def _refresh_gamepad(self) -> None:
-        self._gamepad.set("Connected through XInput" if is_connected() else "No XInput stream")
+        xinput_connected = is_connected()
+        self._gamepad.set("XInput detected" if xinput_connected else "No XInput stream")
         if self._gamepad_status is None or not self._gamepad_status.exists():
             return
         try:
             state = json.loads(self._gamepad_status.read_text(encoding="utf-8"))
+            fresh = time.monotonic() - float(state["updated_at"]) < 1.0
+            if xinput_connected and fresh and state.get("connected") is True:
+                self._gamepad.set("Connected to simulator")
+            elif xinput_connected and fresh:
+                self._gamepad.set("Controller found; reconnecting to simulator")
+            elif xinput_connected:
+                self._gamepad.set("Controller found; client unavailable")
             self._axes.set(
                 f"Left stick: x={state['left_x']:+.2f}, y={state['left_y']:+.2f} "
                 f"({state['mode']})"

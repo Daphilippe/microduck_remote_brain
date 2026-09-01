@@ -30,7 +30,7 @@ function Invoke-WslStack {
         [Parameter(Mandatory)][ValidateSet("start", "status", "stop")]
         [string]$StackAction
     )
-    & wsl.exe -d $Distro -- /bin/bash "$Brain/scripts/local-stack-wsl.sh" $StackAction $Scene $WorkspaceWsl
+    & wsl.exe -d $Distro -- /bin/bash "$Brain/scripts/local-stack-wsl.sh" $StackAction $Scene $WorkspaceWsl $TelemetryPort
     if ($LASTEXITCODE -ne 0) {
         throw "WSL stack action '$StackAction' failed with exit code $LASTEXITCODE"
     }
@@ -72,11 +72,13 @@ function Ensure-TelemetryFirewallRule {
 function Show-TelemetryEndpoint {
     $LanAddress = Get-LanAddress
     Ensure-TelemetryFirewallRule
-    for ($Attempt = 0; $Attempt -lt 30; $Attempt++) {
+    for ($Attempt = 0; $Attempt -lt 60; $Attempt++) {
         if (Test-TcpPort "127.0.0.1" $TelemetryPort) { break }
         [System.Threading.Thread]::Sleep(250)
     }
     if (-not (Test-TcpPort "127.0.0.1" $TelemetryPort)) {
+        Write-Warning "Telemetry startup log from WSL:"
+        & wsl.exe -d $Distro -- /bin/cat "/home/$env:USERNAME/.cache/duck-sim-remote-brain/telemetry.log" 2>$null
         throw "Telemetry dashboard did not become reachable on port $TelemetryPort"
     }
     Write-Host "MuJoCo telemetry: http://localhost:$TelemetryPort"
