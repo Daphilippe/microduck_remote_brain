@@ -19,6 +19,7 @@ class ExecutionReason(StrEnum):
     INSUFFICIENT_DISPLACEMENT = "movement.insufficient_displacement"
     ROBOT_PROTOCOL = "robot.protocol"
     ORACLE_PROTOCOL = "oracle.protocol"
+    TRANSCRIPTION_FAILED = "transcription.failed"
 
 
 class ExecutionError(RuntimeError):
@@ -176,7 +177,8 @@ class PlanExecutor:
         linear = float(step.arguments["linear_velocity"])
         angular = float(step.arguments["angular_velocity"])
         duration = float(step.arguments["duration"])
-        before = self._oracle.read() if self._oracle is not None else None
+        oracle = self._oracle
+        before = oracle.read() if oracle is not None else None
         primary_error: Exception | None = None
         try:
             deadline = self._clock() + duration
@@ -198,8 +200,8 @@ class PlanExecutor:
                 if primary_error is None:
                     raise
 
-        if before is not None and self._minimum_displacement is not None:
-            after = self._oracle.read()
+        if before is not None and self._minimum_displacement is not None and oracle is not None:
+            after = oracle.read()
             displacement = math.hypot(
                 after.trunk_x - before.trunk_x, after.trunk_y - before.trunk_y
             )

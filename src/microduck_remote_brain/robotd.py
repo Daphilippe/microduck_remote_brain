@@ -9,6 +9,8 @@ from typing import Any
 
 from .executor import ExecutionError, ExecutionReason, RobotState
 
+MAX_MESSAGE_BYTES = 1_048_576
+
 
 class RobotdClient:
     def __init__(
@@ -181,16 +183,20 @@ class RobotdClient:
             raise ExecutionError(ExecutionReason.ROBOT_PROTOCOL, "robotd client is not connected")
         self._socket.settimeout(timeout)
         try:
-            line = self._reader.readline()
+            line = self._reader.readline(MAX_MESSAGE_BYTES + 1)
         except TimeoutError:
             raise
         except (OSError, UnicodeError) as error:
             raise ExecutionError(ExecutionReason.ROBOT_PROTOCOL, str(error)) from error
         if not line:
             raise ExecutionError(ExecutionReason.ROBOT_PROTOCOL, "robotd closed the connection")
+        if len(line.encode("utf-8")) > MAX_MESSAGE_BYTES or not line.endswith("\n"):
+            raise ExecutionError(
+                ExecutionReason.ROBOT_PROTOCOL, "robotd message exceeds the framing limit"
+            )
         try:
-            message = json.loads(line)
-        except json.JSONDecodeError as error:
+            message = json.loads(line, parse_constant=_reject_json_constant)
+        except (json.JSONDecodeError, ValueError) as error:
             raise ExecutionError(ExecutionReason.ROBOT_PROTOCOL, "invalid robotd JSON") from error
         if not isinstance(message, dict) or message.get("jsonrpc") != "2.0":
             raise ExecutionError(ExecutionReason.ROBOT_PROTOCOL, "invalid robotd JSON-RPC envelope")
@@ -227,3 +233,7 @@ class RobotdClient:
 
 def _finite_number(value: Any) -> bool:
     return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _reject_json_constant(value: str) -> None:
+    raise ValueError(f"non-standard JSON constant: {value}")

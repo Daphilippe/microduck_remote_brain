@@ -54,7 +54,7 @@ def test_robotd_frames_and_interleaved_state(monkeypatch: pytest.MonkeyPatch) ->
     client = RobotdClient("/run/robotd.sock")
 
     client.connect()
-    client.subscribe(10.0)
+    client.subscribe(10)
     client.move(0.2, 0.1)
     state = client.next_state(0, 1.0)
     client.stop()
@@ -85,7 +85,23 @@ def test_robotd_rejects_unaccepted_response(monkeypatch: pytest.MonkeyPatch) -> 
     client.connect()
 
     with pytest.raises(ExecutionError) as caught:
-        client.subscribe(10.0)
+        client.subscribe(10)
+
+    assert caught.value.reason is ExecutionReason.ROBOT_PROTOCOL
+
+
+def test_robotd_rejects_non_standard_json_numbers(monkeypatch: pytest.MonkeyPatch) -> None:
+    connection = FakeSocket()
+    connection.reader = io.StringIO(
+        '{"jsonrpc":"2.0","id":1,"result":{"accepted":NaN}}\n'
+    )
+    monkeypatch.setattr("microduck_remote_brain.robotd.socket.AF_UNIX", 1, raising=False)
+    monkeypatch.setattr("microduck_remote_brain.robotd.socket.socket", lambda *args: connection)
+    client = RobotdClient("/run/robotd.sock")
+    client.connect()
+
+    with pytest.raises(ExecutionError, match="invalid robotd JSON") as caught:
+        client.subscribe(10)
 
     assert caught.value.reason is ExecutionReason.ROBOT_PROTOCOL
 

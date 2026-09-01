@@ -53,6 +53,6 @@ class WhisperCppTranscriber:
             transcript = transcript_path.read_text(encoding="utf-8").strip()
             if not transcript:
                 raise ExecutionError(
-                    ExecutionReason.MOVEMENT_NOT_OBSERVED, "Whisper returned an empty transcript"
+                    ExecutionReason.TRANSCRIPTION_FAILED, "Whisper returned an empty transcript"
                 )
             return transcript

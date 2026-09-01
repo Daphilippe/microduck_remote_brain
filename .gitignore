@@ -1,4 +1,6 @@
 .local/
+.coverage
+dist/
 .pytest_cache/
 .ruff_cache/
 .venv/

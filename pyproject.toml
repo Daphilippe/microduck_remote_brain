@@ -15,18 +15,23 @@ voice = [
 	"numpy>=2.0,<3",
 	"sounddevice>=0.5,<0.6",
 ]
+vision = [
+	"opencv-python>=4.10,<5",
+]
 
 [dependency-groups]
 dev = [
 	"pytest>=8.4,<9",
 	"ruff>=0.13,<0.14",
 	"pylint>=3.3,<4",
+	"pyright>=1.1.405,<2",
 ]
 
 [project.scripts]
 microduck-brain = "microduck_remote_brain.cli:main"
 microduck-gamepad = "microduck_remote_brain.gamepad_cli:main"
 microduck-voice = "microduck_remote_brain.voice_cli:main"
+microduck-autonomous = "microduck_remote_brain.autonomous_cli:main"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

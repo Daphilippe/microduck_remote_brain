@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import math
 import socket
-from typing import Any
+from typing import Any, TypeGuard
 
 from .executor import BodySnapshot, ExecutionError, ExecutionReason
 
@@ -57,7 +57,11 @@ class TcpBodyOracle:
         trunk_x = trunk[0]
         trunk_y = trunk[1]
         sim_time = response.get("sim_time")
-        if not all(_finite_number(value) for value in (trunk_x, trunk_y, sim_time)):
+        if (
+            not _finite_number(trunk_x)
+            or not _finite_number(trunk_y)
+            or not _finite_number(sim_time)
+        ):
             raise ExecutionError(
                 ExecutionReason.ORACLE_PROTOCOL,
                 "BodyOracle trunk x/y and sim_time must be finite numbers",
@@ -94,5 +98,5 @@ class TcpBodyOracle:
         return message
 
 
-def _finite_number(value: Any) -> bool:
+def _finite_number(value: Any) -> TypeGuard[int | float]:
     return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
