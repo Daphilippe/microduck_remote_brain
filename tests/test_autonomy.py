@@ -74,3 +74,26 @@ def test_persona_can_enable_robot_sound_commands(monkeypatch) -> None:
 
     assert plan.steps[0].arguments == {"tag": "greet"}
     assert "You are a sociable MicroDuck." in captured["messages"][0]["content"]
+
+
+def test_persona_can_choose_a_bounded_double_sound(monkeypatch) -> None:
+    response = Response(
+        json.dumps(
+            {
+                "message": {
+                    "content": '{"action":"chirp","sound_pattern":"double"}'
+                }
+            }
+        ).encode()
+    )
+    monkeypatch.setattr(
+        "microduck_remote_brain.autonomy.urllib.request.urlopen",
+        lambda *_args, **_kwargs: response,
+    )
+
+    plan = OllamaAutonomousPlanner("qwen").plan("A familiar person is playing nearby.")
+
+    assert [step.arguments for step in plan.steps] == [
+        {"tag": "chirp"},
+        {"tag": "chirp"},
+    ]

@@ -29,10 +29,11 @@ The `[persona]` table is MicroDuck's durable character definition. `prompt` desc
 social behavior and safety priorities. `sound_actions` is the exact sound vocabulary offered to the
 LLM. Supported robot commands are `alarm`, `greet`, `inquire`, `peck`, `chirp`, and `coo`.
 
-The decision model chooses from this configured vocabulary plus `stop`. The code converts that
-choice to a normal `robot.sound` or `robot.stop` plan, and existing gates validate it before the
-command reaches `robotd`. This makes sounds part of autonomous expression rather than unconditional
-feedback after every observation.
+The decision model chooses from this configured vocabulary plus `stop` and the movement actions that
+are explicitly enabled. Its only sound modulation is a closed `single` or `double` pattern. A double
+pattern emits the same allowed sound twice; the model cannot set volume, pitch, arbitrary files or
+raw sound parameters. The code converts the choice to normal `robot.sound` steps, and existing gates
+validate every step before it reaches `robotd`.
 
 Edit the prompt or sound list in the selected profile, then restart the autonomous process. Unknown
 sound tags and incomplete Whisper configuration are rejected at startup.
