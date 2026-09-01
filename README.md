@@ -91,7 +91,8 @@ The script starts components in this order:
 5. a TCP gateway on `127.0.0.1:8765` representing the Wi-Fi hop;
 6. the Windows-hosted MuJoCo telemetry dashboard on `0.0.0.0:8780`, reading
     the WSL simulator through localhost and adding a Windows Firewall rule for private networks;
-7. the Windows push-to-talk loop, Whisper.cpp, Ollama planning, gates, and actions.
+7. the autonomous camera/personality loop, enabled for bounded MuJoCo movement;
+8. the Windows push-to-talk loop, Whisper.cpp, Ollama planning, gates, and actions.
 
 The telemetry dashboard is reachable from another PC at the Ethernet IPv4
 address printed by the launcher, for example `http://<lan-ip>:8780`. It reads
@@ -144,6 +145,7 @@ Useful commands:
 
 ```powershell
 .\scripts\local-stack.ps1 -NoVoice
+.\scripts\local-stack.ps1 -NoVoice -NoAutonomy
 .\scripts\local-stack.ps1 -Action status
 .\scripts\local-stack.ps1 -Action text -Text "Walk forward for four seconds"
 .\scripts\local-stack.ps1 -Action stop
@@ -151,6 +153,9 @@ Useful commands:
 
 The launcher does not require activating the Python virtual environment
 manually. Use `-TelemetryPort` when port `8780` is already occupied.
+`-NoVoice` keeps the autonomous personality running; use `-NoAutonomy` only when a fully manual
+simulation is required. Voice, autonomous actions and gamepad commands use separate activity files
+so they do not command the robot simultaneously.
 
 The TCP gateway is intentionally simulation-only and has no authentication. It
 creates a real network boundary on one PC without pretending to implement RF.

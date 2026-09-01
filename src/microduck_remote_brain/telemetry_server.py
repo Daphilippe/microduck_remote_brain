@@ -173,7 +173,8 @@ class Handler(BaseHTTPRequestHandler):
             pass
 
     def log_message(self, format: str, *args: object) -> None:  # pylint: disable=redefined-builtin
-        del format, args
+        if self.client_address[0] not in {"127.0.0.1", "::1"}:
+            print(f"telemetry client {self.client_address[0]}: {format % args}", flush=True)
 
 
 def main(argv: Sequence[str] | None = None) -> int:

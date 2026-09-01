@@ -40,11 +40,18 @@ sound tags and incomplete Whisper configuration are rejected at startup.
 
 ## Simulation
 
-The default profile is [config/microduck.sim.toml](../config/microduck.sim.toml). Start the simulation
-stack without push-to-talk, then run one autonomous cycle:
+The default profile is [config/microduck.sim.toml](../config/microduck.sim.toml). The normal local
+stack starts autonomy in the background. `-NoVoice` disables push-to-talk but keeps autonomy active:
 
 ```powershell
 .\scripts\local-stack.ps1 -NoVoice
+Get-Content .\.local\autonomy.log -Wait
+```
+
+For one foreground cycle without a competing background brain:
+
+```powershell
+.\scripts\local-stack.ps1 -NoVoice -NoAutonomy
 .\scripts\autonomous-brain.ps1 -Once
 ```
 
@@ -64,7 +71,8 @@ webcam remains available through `perception.source = "camera"`, and an image fi
 
 Physical movement is rejected by configuration until a deterministic hardware safety provider is
 implemented. In simulation, movement requires both simulator perception and the body oracle. Every
-generated plan still passes through the existing gates.
+generated plan still passes through the existing gates. A safe `stop` decision also emits one quiet
+`coo`, so an autonomous cycle remains observable even when movement is unsafe.
 
 Set `autonomy.interval` in TOML to change the delay between observations. Without `-Once` or
 `-MaxCycles`, the launcher runs until interrupted.

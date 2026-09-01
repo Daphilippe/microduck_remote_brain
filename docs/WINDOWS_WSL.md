@@ -109,6 +109,7 @@ From PowerShell:
 
 ```powershell
 .\scripts\local-stack.ps1 -NoVoice
+.\scripts\local-stack.ps1 -NoVoice -NoAutonomy
 .\scripts\local-stack.ps1 -Action status
 .\scripts\autonomous-brain.ps1 -Once
 ```
@@ -121,7 +122,13 @@ The startup sequence is:
 4. expose `robotd` through the localhost TCP adapter;
 5. start telemetry on Windows port `8780`, reading the WSL body server through localhost;
 6. start the gamepad and optional voice clients;
-7. run autonomy separately with `microduck.sim.toml`.
+7. start autonomy with `microduck.sim.toml`, unless `-NoAutonomy` is specified.
+
+`-NoVoice` does not disable autonomy. Follow its decisions with:
+
+```powershell
+Get-Content .\.local\autonomy.log -Wait
+```
 
 Stop every managed process with:
 
@@ -187,6 +194,17 @@ Test-NetConnection 127.0.0.1 -Port 7801
 Invoke-RestMethod http://127.0.0.1:8780/api/health
 Invoke-RestMethod http://<windows-ip>:8780/api/health
 ```
+
+When a phone still cannot connect, retry the URL and inspect:
+
+```powershell
+Get-Content .\.local\telemetry.log -Tail 30
+```
+
+An entry containing the phone's `192.168.1.x` address proves that the request reached Windows. If no
+phone address appears while localhost and the PC's LAN URL work, disable **AP isolation**, **client
+isolation**, **WLAN partition** or **guest network isolation** in the Wi-Fi router/access point. Also
+ensure the phone is not on a guest SSID and temporarily disable mobile data or any VPN for the test.
 
 ### Ollama is slow
 
