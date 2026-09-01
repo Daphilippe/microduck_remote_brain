@@ -1,0 +1,7 @@
+.local/
+.pytest_cache/
+.ruff_cache/
+.venv/
+*.jsonl
+__pycache__/
+*.py[cod]

@@ -1,0 +1,77 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "microduck-remote-brain"
+version = "0.1.0"
+description = "Hardware-agnostic planning and verification gates for MicroDuck"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.optional-dependencies]
+voice = [
+	"numpy>=2.0,<3",
+	"sounddevice>=0.5,<0.6",
+]
+
+[dependency-groups]
+dev = [
+	"pytest>=8.4,<9",
+	"ruff>=0.13,<0.14",
+	"pylint>=3.3,<4",
+]
+
+[project.scripts]
+microduck-brain = "microduck_remote_brain.cli:main"
+microduck-gamepad = "microduck_remote_brain.gamepad_cli:main"
+microduck-voice = "microduck_remote_brain.voice_cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.pyright]
+include = ["src", "tests"]
+extraPaths = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S"]
+
+[tool.pylint.main]
+py-version = "3.12"
+source-roots = ["src"]
+
+[tool.pylint.messages_control]
+disable = [
+	"consider-using-with",
+	"import-outside-toplevel",
+	"missing-final-newline",
+	"duplicate-code",
+	"fixme",
+	"invalid-name",
+	"missing-function-docstring",
+	"missing-module-docstring",
+	"missing-class-docstring",
+	"too-few-public-methods",
+	"too-many-arguments",
+	"too-many-branches",
+]
+
+[tool.pylint.format]
+max-line-length = 100
+
+[tool.pylint.design]
+max-args = 8
+max-attributes = 10
+max-branches = 15
+max-locals = 20
+max-statements = 50

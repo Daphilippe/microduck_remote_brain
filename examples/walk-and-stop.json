@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "plan_id": "local-sim-walk-001",
+  "goal": "Walk forward in simulation and stop",
+  "steps": [
+    {
+      "id": "walk-forward",
+      "tool": "walk",
+      "arguments": {
+        "linear_velocity": 0.3,
+        "angular_velocity": 0.0,
+        "duration": 4.0
+      }
+    },
+    {
+      "id": "stop",
+      "tool": "stop",
+      "arguments": {}
+    }
+  ],
+  "requires_confirmation": false
+}

@@ -1,0 +1,229 @@
+from __future__ import annotations
+
+import json
+import math
+import socket
+import time
+from collections import deque
+from typing import Any
+
+from .executor import ExecutionError, ExecutionReason, RobotState
+
+
+class RobotdClient:
+    def __init__(
+        self,
+        socket_path: str | None = None,
+        *,
+        host: str | None = None,
+        port: int | None = None,
+    ) -> None:
+        if (socket_path is None) == (host is None):
+            raise ValueError("configure exactly one robotd transport")
+        if host is not None and port is None:
+            raise ValueError("TCP robotd transport requires a port")
+        self._socket_path = socket_path
+        self._host = host
+        self._port = port
+        self._socket: socket.socket | None = None
+        self._reader: Any = None
+        self._request_id = 0
+        self._revision = 0
+        self._states: deque[RobotState] = deque()
+
+    def connect(self) -> None:
+        if self._socket is not None:
+            raise ExecutionError(
+                ExecutionReason.ROBOT_PROTOCOL, "robotd client is already connected"
+            )
+        if self._host is not None:
+            connection = socket.create_connection((self._host, self._port), timeout=5.0)
+        else:
+            unix_family = getattr(socket, "AF_UNIX", None)
+            if unix_family is None:
+                raise ExecutionError(
+                    ExecutionReason.CONNECTION_FAILED,
+                    "this platform does not support Unix domain sockets",
+                )
+            connection = socket.socket(unix_family, socket.SOCK_STREAM)
+        try:
+            if self._socket_path is not None:
+                connection.connect(self._socket_path)
+            self._reader = connection.makefile("r", encoding="utf-8", newline="\n")
+        except BaseException:
+            connection.close()
+            raise
+        self._socket = connection
+
+    def close(self) -> None:
+        if self._reader is not None:
+            self._reader.close()
+            self._reader = None
+        if self._socket is not None:
+            self._socket.close()
+            self._socket = None
+
+    def subscribe(self, hz: int) -> None:
+        self._request("robot.subscribe", {"hz": hz})
+
+    def move(self, linear_velocity: float, angular_velocity: float) -> None:
+        self.move_twist(linear_velocity, 0.0, angular_velocity)
+
+    def move_twist(self, vx: float, vy: float, vyaw: float) -> None:
+        self._send(
+            {
+                "jsonrpc": "2.0",
+                "method": "robot.move",
+                "params": {"vx": vx, "vy": vy, "vyaw": vyaw},
+            }
+        )
+
+    def stop(self) -> None:
+        self._request("robot.stop", {})
+        self._states.clear()
+
+    def sound(self, tag: str, hold: bool | None = None, *, notify: bool = False) -> None:
+        params: dict[str, Any] = {"tag": tag}
+        if hold is not None:
+            params["hold"] = hold
+        if notify:
+            self._notify("robot.sound", params)
+        else:
+            self._request("robot.sound", params)
+
+    def toggle_enable(self) -> None:
+        self._request("robot.enable", {"on": False, "toggle": True})
+
+    def skill(self, name: str) -> None:
+        self._request("robot.do", {"skill": name})
+
+    def head(self, neck_pitch: float, head_pitch: float, head_yaw: float, head_roll: float) -> None:
+        self._notify(
+            "robot.head",
+            {
+                "neck_pitch": neck_pitch,
+                "head_pitch": head_pitch,
+                "head_yaw": head_yaw,
+                "head_roll": head_roll,
+            },
+        )
+
+    def pose(self, z: float, roll: float, pitch: float, *, active: bool) -> None:
+        self._notify(
+            "robot.pose", {"z": z, "roll": roll, "pitch": pitch, "active": active}
+        )
+
+    def mouth(self, opening: float) -> None:
+        self._notify("robot.mouth", {"open": opening})
+
+    def shutdown(self) -> None:
+        self._request("robot.shutdown", {})
+
+    def set_mode(self, mode: str) -> None:
+        self._request("robot.setMode", {"mode": mode})
+
+    def _notify(self, method: str, params: dict[str, Any]) -> None:
+        self._send({"jsonrpc": "2.0", "method": method, "params": params})
+
+    def next_state(self, after_revision: int, timeout: float) -> RobotState:
+        deadline = time.monotonic() + timeout
+        while True:
+            while self._states:
+                state = self._states.popleft()
+                if state.revision > after_revision:
+                    return state
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("timed out waiting for fresh robot.state")
+            self._read_message(remaining)
+
+    def _request(self, method: str, params: dict[str, Any]) -> None:
+        self._request_id += 1
+        request_id = self._request_id
+        self._send(
+            {
+                "jsonrpc": "2.0",
+                "id": request_id,
+                "method": method,
+                "params": params,
+            }
+        )
+        while True:
+            message = self._read_message(None)
+            if message.get("id") != request_id:
+                if "id" in message:
+                    raise ExecutionError(
+                        ExecutionReason.ROBOT_PROTOCOL,
+                        f"unexpected robotd response id {message.get('id')!r}",
+                    )
+                continue
+            if "error" in message:
+                raise ExecutionError(
+                    ExecutionReason.ROBOT_PROTOCOL,
+                    f"robotd rejected {method}: {message['error']!r}",
+                )
+            result = message.get("result")
+            if not isinstance(result, dict) or result.get("accepted") is not True:
+                raise ExecutionError(
+                    ExecutionReason.ROBOT_PROTOCOL,
+                    f"robotd did not accept {method}",
+                )
+            return
+
+    def _send(self, message: dict[str, Any]) -> None:
+        if self._socket is None:
+            raise ExecutionError(ExecutionReason.ROBOT_PROTOCOL, "robotd client is not connected")
+        payload = json.dumps(message, separators=(",", ":"), allow_nan=False).encode() + b"\n"
+        self._socket.sendall(payload)
+
+    def _read_message(self, timeout: float | None) -> dict[str, Any]:
+        if self._socket is None or self._reader is None:
+            raise ExecutionError(ExecutionReason.ROBOT_PROTOCOL, "robotd client is not connected")
+        self._socket.settimeout(timeout)
+        try:
+            line = self._reader.readline()
+        except TimeoutError:
+            raise
+        except (OSError, UnicodeError) as error:
+            raise ExecutionError(ExecutionReason.ROBOT_PROTOCOL, str(error)) from error
+        if not line:
+            raise ExecutionError(ExecutionReason.ROBOT_PROTOCOL, "robotd closed the connection")
+        try:
+            message = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise ExecutionError(ExecutionReason.ROBOT_PROTOCOL, "invalid robotd JSON") from error
+        if not isinstance(message, dict) or message.get("jsonrpc") != "2.0":
+            raise ExecutionError(ExecutionReason.ROBOT_PROTOCOL, "invalid robotd JSON-RPC envelope")
+        if message.get("method") == "robot.state":
+            self._states.append(self._parse_state(message.get("params")))
+        return message
+
+    def _parse_state(self, params: Any) -> RobotState:
+        if not isinstance(params, dict):
+            raise ExecutionError(
+                ExecutionReason.ROBOT_PROTOCOL, "robot.state params must be an object"
+            )
+        movement = params.get("move")
+        if not isinstance(movement, dict):
+            raise ExecutionError(
+                ExecutionReason.ROBOT_PROTOCOL, "robot.state move must be an object"
+            )
+        applied = movement.get("applied")
+        if not isinstance(applied, list) or len(applied) != 3:
+            raise ExecutionError(
+                ExecutionReason.ROBOT_PROTOCOL,
+                "robot.state move.applied must contain vx, vy, and vyaw",
+            )
+        linear = applied[0]
+        angular = applied[2]
+        if not _finite_number(linear) or not _finite_number(angular):
+            raise ExecutionError(
+                ExecutionReason.ROBOT_PROTOCOL,
+                "robot.state applied velocity must contain finite linear and angular values",
+            )
+        self._revision += 1
+        return RobotState(self._revision, float(linear), float(angular))
+
+
+def _finite_number(value: Any) -> bool:
+    return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)

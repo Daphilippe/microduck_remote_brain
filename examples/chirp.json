@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "plan_id": "local-sim-chirp-001",
+  "goal": "Play the simulated duck chirp",
+  "steps": [
+    {
+      "id": "chirp",
+      "tool": "sound",
+      "arguments": {
+        "tag": "chirp"
+      }
+    }
+  ],
+  "requires_confirmation": false
+}
