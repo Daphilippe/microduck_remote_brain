@@ -34,6 +34,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--trigger", choices=("gamepad", "keyboard"), default="gamepad")
     parser.add_argument("--gamepad-button", type=int, default=0x0080)
     parser.add_argument("--gamepad-pause-file", type=Path)
+    parser.add_argument("--autonomy-active-file", type=Path)
     parser.add_argument("--pid-file", type=Path)
     parser.add_argument("--text", help="skip audio and execute one text command")
     parser.add_argument("--once", action="store_true")
@@ -53,6 +54,8 @@ def _execute_text(text: str, args: argparse.Namespace) -> None:
         if pause_file is not None:
             pause_file.parent.mkdir(parents=True, exist_ok=True)
             pause_file.touch()
+            while args.autonomy_active_file is not None and args.autonomy_active_file.exists():
+                time.sleep(0.05)
             time.sleep(0.1)
         executor.execute(plan)
     finally:

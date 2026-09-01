@@ -129,7 +129,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--robot-port", type=int, default=8765)
     parser.add_argument("--controller", type=int, default=0)
     parser.add_argument("--hz", type=int, default=50)
-    parser.add_argument("--pause-file", type=Path)
+    parser.add_argument("--pause-file", type=Path, action="append", dest="pause_files")
     parser.add_argument("--status-file", type=Path)
     return parser
 
@@ -187,7 +187,7 @@ def main(argv: list[str] | None = None) -> int:  # pylint: disable=too-many-stat
     try:
         while True:
             started = time.monotonic()
-            if args.pause_file is not None and args.pause_file.exists():
+            if any(path.exists() for path in args.pause_files or ()):
                 if robot_connected and controller.drive_active:
                     try:
                         robot.stop()

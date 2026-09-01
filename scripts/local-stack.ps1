@@ -10,7 +10,8 @@ param(
     [int]$GamepadButton = 128,
     [int]$TelemetryPort = 8780,
     [string]$Text,
-    [switch]$NoVoice
+    [switch]$NoVoice,
+    [switch]$NoAutonomy
 )
 
 $ErrorActionPreference = "Stop"
@@ -189,6 +190,15 @@ function Show-GamepadStatus {
     Write-Host "Gamepad client:    $(if ($ProcessRunning) { 'running' } else { 'not running' })"
 }
 
+function Show-AutonomyStatus {
+    $PidFile = Join-Path $LocalState "autonomy.pid"
+    $Running = $false
+    if (Test-Path $PidFile) {
+        $Running = $null -ne (Get-Process -Id ([int](Get-Content $PidFile)) -ErrorAction SilentlyContinue)
+    }
+    Write-Host "Autonomous brain:  $(if ($Running) { 'running' } else { 'not running' })"
+}
+
 function Test-TcpPort {
     param([string]$HostName, [int]$Port)
     try {
@@ -274,6 +284,7 @@ if ($Action -eq "stop") {
     Set-Content -Path $StopRequest -Value "stop"
     Stop-ManagedPythonProcess -PidFile (Join-Path $Project ".local\panel.pid") -CommandMarker "microduck_remote_brain.control_panel"
     Stop-ManagedPythonProcess -PidFile (Join-Path $Project ".local\voice.pid") -CommandMarker "microduck_remote_brain.voice_cli"
+    Stop-ManagedPythonProcess -PidFile (Join-Path $Project ".local\autonomy.pid") -CommandMarker "microduck_remote_brain.autonomous_cli"
     Stop-ManagedPythonProcess -PidFile (Join-Path $Project ".local\gamepad.pid") -CommandMarker "microduck_remote_brain.gamepad_cli"
     Stop-ManagedPythonProcess -PidFile (Join-Path $Project ".local\telemetry.pid") -CommandMarker "microduck_remote_brain.telemetry_server"
     Stop-ManagedOllama
@@ -293,6 +304,7 @@ if ($Action -eq "status") {
     if ($Health.status -ne "ok") { throw "Telemetry dashboard is not healthy" }
     Write-Host "Fake Wi-Fi, telemetry, and Ollama are reachable."
     Show-GamepadStatus
+    Show-AutonomyStatus
     exit 0
 }
 
@@ -329,6 +341,9 @@ Write-Host "Ollama model:     $OllamaModel"
 
 $LocalState = Join-Path $Project ".local"
 New-Item -ItemType Directory -Force -Path $LocalState | Out-Null
+$ManualActive = Join-Path $LocalState "manual-active"
+$AutonomyActive = Join-Path $LocalState "autonomy-active"
+Remove-Item $ManualActive, $AutonomyActive -Force -ErrorAction SilentlyContinue
 $PanelPidFile = Join-Path $LocalState "panel.pid"
 Stop-ManagedPythonProcess -PidFile $PanelPidFile -CommandMarker "microduck_remote_brain.control_panel"
 $PanelStart = @{
@@ -346,7 +361,8 @@ $GamepadStart = @{
         "-u", "-m", "microduck_remote_brain.gamepad_cli",
         "--robot-host", "127.0.0.1",
         "--robot-port", "8765",
-        "--pause-file", (Join-Path $LocalState "brain-active"),
+        "--pause-file", $ManualActive,
+        "--pause-file", $AutonomyActive,
         "--status-file", (Join-Path $LocalState "gamepad-state.json")
     )
     RedirectStandardOutput = Join-Path $LocalState "gamepad.log"
@@ -356,6 +372,26 @@ $GamepadStart = @{
 $GamepadProcess = Start-Process @GamepadStart
 Set-Content -Path $GamepadPidFile -Value $GamepadProcess.Id
 Show-GamepadStatus
+
+$AutonomyPidFile = Join-Path $LocalState "autonomy.pid"
+Stop-ManagedPythonProcess -PidFile $AutonomyPidFile -CommandMarker "microduck_remote_brain.autonomous_cli"
+if (-not $NoAutonomy) {
+    $AutonomyStart = @{
+        FilePath = "$Project\.venv\Scripts\python.exe"
+        ArgumentList = @(
+            "-u", "-m", "microduck_remote_brain.autonomous_cli",
+            "--config", (Join-Path $Project "config\microduck.sim.toml"),
+            "--pause-file", $ManualActive,
+            "--activity-file", $AutonomyActive
+        )
+        RedirectStandardOutput = Join-Path $LocalState "autonomy.log"
+        RedirectStandardError = Join-Path $LocalState "autonomy-error.log"
+        PassThru = $true
+    }
+    $AutonomyProcess = Start-Process @AutonomyStart
+    Set-Content -Path $AutonomyPidFile -Value $AutonomyProcess.Id
+}
+Show-AutonomyStatus
 
 if ($NoVoice) {
     Write-Host "Voice loop skipped. Run this script again without -NoVoice when ready."
@@ -370,7 +406,8 @@ $VoiceArguments = @(
     "--simulator-host", "127.0.0.1",
     "--simulator-port", "7801",
     "--minimum-displacement", "0.02",
-    "--gamepad-pause-file", (Join-Path $LocalState "brain-active"),
+    "--gamepad-pause-file", $ManualActive,
+    "--autonomy-active-file", $AutonomyActive,
     "--pid-file", (Join-Path $LocalState "voice.pid")
 )
 
@@ -409,6 +446,7 @@ exit 0
 catch {
     Stop-ManagedPythonProcess -PidFile (Join-Path $Project ".local\panel.pid") -CommandMarker "microduck_remote_brain.control_panel"
     Stop-ManagedPythonProcess -PidFile (Join-Path $Project ".local\voice.pid") -CommandMarker "microduck_remote_brain.voice_cli"
+    Stop-ManagedPythonProcess -PidFile (Join-Path $Project ".local\autonomy.pid") -CommandMarker "microduck_remote_brain.autonomous_cli"
     Stop-ManagedPythonProcess -PidFile (Join-Path $Project ".local\gamepad.pid") -CommandMarker "microduck_remote_brain.gamepad_cli"
     Stop-ManagedPythonProcess -PidFile (Join-Path $Project ".local\telemetry.pid") -CommandMarker "microduck_remote_brain.telemetry_server"
     Stop-ManagedOllama

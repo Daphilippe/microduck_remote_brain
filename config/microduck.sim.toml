@@ -31,7 +31,7 @@ port = 7801
 minimum_displacement = 0.02
 
 [autonomy]
-allow_movement = false
+allow_movement = true
 interval = 15.0
 
 [audit]

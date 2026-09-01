@@ -18,7 +18,7 @@ if (-not (Test-Path -LiteralPath $Config -PathType Leaf)) {
     throw "MicroDuck brain configuration does not exist: $Config"
 }
 
-& uv sync --project $Project --extra vision --dev
+& uv sync --project $Project --extra vision --extra voice --dev
 if ($LASTEXITCODE -ne 0) {
     throw "Remote Brain dependency synchronization failed"
 }

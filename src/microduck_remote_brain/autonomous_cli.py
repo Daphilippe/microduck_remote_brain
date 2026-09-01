@@ -11,6 +11,7 @@ from .autonomy import OllamaAutonomousPlanner
 from .body_oracle import TcpBodyOracle
 from .brain_config import BrainConfig, load_brain_config
 from .executor import ExecutionError, PlanExecutor
+from .model import Plan
 from .perception import CameraPerception, ImagePerception, PerceptionProvider, SimulatorPerception
 from .prerequisites import PrerequisiteError, verify_local_foundations
 from .robotd import RobotdClient
@@ -22,6 +23,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", type=Path, default=Path("config/microduck.sim.toml"))
     parser.add_argument("--max-cycles", type=int)
     parser.add_argument("--once", action="store_true")
+    parser.add_argument("--pause-file", type=Path)
+    parser.add_argument("--activity-file", type=Path)
     return parser
 
 
@@ -53,6 +56,9 @@ def main(argv: list[str] | None = None) -> int:
         cycles = 1 if args.once else args.max_cycles
         completed = 0
         while cycles is None or completed < cycles:
+            if args.pause_file is not None and args.pause_file.exists():
+                time.sleep(0.1)
+                continue
             try:
                 image = perception.capture()
                 observation = vision.describe(image)
@@ -62,18 +68,8 @@ def main(argv: list[str] | None = None) -> int:
                 plan_value = asdict(plan)
                 print(json.dumps(plan_value, indent=2, ensure_ascii=False, allow_nan=False))
                 audit.write("plan.created", plan=plan_value)
-                PlanExecutor(
-                    _robot_client(config),
-                    oracle=(
-                        TcpBodyOracle(config.oracle_host, config.oracle_port)
-                        if config.oracle_enabled
-                        else None
-                    ),
-                    minimum_displacement=(
-                        config.minimum_displacement if config.oracle_enabled else None
-                    ),
-                    event_sink=audit.lifecycle,
-                ).execute(plan)
+                if not _execute_plan(config, plan, audit, args.pause_file, args.activity_file):
+                    continue
                 completed += 1
             except (ExecutionError, OSError, RuntimeError, ValueError) as error:
                 audit.write("cycle.failed", error_type=type(error).__name__, message=str(error))
@@ -90,6 +86,9 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     except KeyboardInterrupt:
         return 130
+    finally:
+        if args.activity_file is not None:
+            args.activity_file.unlink(missing_ok=True)
 
 
 def _perception_provider(config: BrainConfig) -> PerceptionProvider:
@@ -99,6 +98,36 @@ def _perception_provider(config: BrainConfig) -> PerceptionProvider:
     if config.perception_source == "simulator":
         return SimulatorPerception(config.perception_host, config.perception_port)
     return CameraPerception(config.camera_device)
+
+
+def _execute_plan(
+    config: BrainConfig,
+    plan: Plan,
+    audit: JsonlAuditLog,
+    pause_file: Path | None,
+    activity_file: Path | None,
+) -> bool:
+    if activity_file is not None:
+        activity_file.parent.mkdir(parents=True, exist_ok=True)
+        activity_file.touch()
+    try:
+        if pause_file is not None and pause_file.exists():
+            audit.write("cycle.deferred", reason="manual control became active")
+            return False
+        PlanExecutor(
+            _robot_client(config),
+            oracle=(
+                TcpBodyOracle(config.oracle_host, config.oracle_port)
+                if config.oracle_enabled
+                else None
+            ),
+            minimum_displacement=(config.minimum_displacement if config.oracle_enabled else None),
+            event_sink=audit.lifecycle,
+        ).execute(plan)
+        return True
+    finally:
+        if activity_file is not None:
+            activity_file.unlink(missing_ok=True)
 
 
 def _robot_client(config: BrainConfig) -> RobotdClient:
