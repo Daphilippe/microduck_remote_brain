@@ -21,7 +21,7 @@ class OllamaVision:
         model: str,
         *,
         endpoint: str = "http://127.0.0.1:11434/api/chat",
-        timeout: float = 120.0,
+        timeout: float | None = None,
     ) -> None:
         self._model = model
         self._endpoint = endpoint
@@ -41,7 +41,7 @@ class OllamaVision:
                     "images": [base64.b64encode(image).decode("ascii")],
                 }
             ],
-            "options": {"temperature": 0},
+            "options": {"temperature": 0, "num_predict": 192},
         }
         request = urllib.request.Request(
             self._endpoint,
@@ -50,7 +50,12 @@ class OllamaVision:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self._timeout) as response:
+            response_context = (
+                urllib.request.urlopen(request)
+                if self._timeout is None
+                else urllib.request.urlopen(request, timeout=self._timeout)
+            )
+            with response_context as response:
                 result = json.load(response)
             observation = result["message"]["content"].strip()
         except (OSError, TimeoutError, urllib.error.URLError) as error:

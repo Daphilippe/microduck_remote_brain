@@ -65,7 +65,7 @@ class OllamaPlanner:
         model: str,
         *,
         endpoint: str = "http://127.0.0.1:11434/api/chat",
-        timeout: float = 120.0,
+        timeout: float | None = None,
         use_json_schema: bool = True,
     ) -> None:
         self._model = model
@@ -118,7 +118,12 @@ class OllamaPlanner:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(request, timeout=self._timeout) as response:
+            response_context = (
+                urllib.request.urlopen(request)
+                if self._timeout is None
+                else urllib.request.urlopen(request, timeout=self._timeout)
+            )
+            with response_context as response:
                 result = json.load(response)
         except (OSError, TimeoutError, urllib.error.URLError) as error:
             raise ExecutionError(

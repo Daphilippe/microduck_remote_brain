@@ -54,6 +54,23 @@ def test_movement_decision_becomes_bounded_plan(monkeypatch) -> None:
     assert plan.steps[0].arguments["linear_velocity"] == 0.1
 
 
+def test_stop_decision_remains_observable(monkeypatch) -> None:
+    response = Response(
+        json.dumps(
+            {"message": {"content": '{"action":"stop","sound_pattern":"single"}'}}
+        ).encode()
+    )
+    monkeypatch.setattr(
+        "microduck_remote_brain.autonomy.urllib.request.urlopen",
+        lambda *_args, **_kwargs: response,
+    )
+
+    plan = OllamaAutonomousPlanner("qwen").plan("Walls are close.")
+
+    assert [step.tool for step in plan.steps] == ["stop", "sound"]
+    assert plan.steps[1].arguments == {"tag": "coo"}
+
+
 def test_persona_can_enable_robot_sound_commands(monkeypatch) -> None:
     response = Response(
         json.dumps({"message": {"content": '{"action":"greet"}'}}).encode()

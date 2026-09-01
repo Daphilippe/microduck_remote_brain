@@ -30,6 +30,7 @@ def test_ollama_vision_sends_image_and_returns_observation(monkeypatch) -> None:
 
     assert observation == "A clear floor."
     assert captured["think"] is False
+    assert captured["options"]["num_predict"] == 192
     message = captured["messages"][0]
     assert message["images"] == [base64.b64encode(b"jpeg-data").decode("ascii")]
     assert "Do not choose an action" in message["content"]
