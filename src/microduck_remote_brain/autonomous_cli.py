@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import time
+import uuid
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -11,10 +12,11 @@ from .audit import JsonlAuditLog
 from .autonomy import ActuatorResolver, OllamaPersonaModel
 from .body_oracle import TcpBodyOracle
 from .brain_config import BrainConfig, load_brain_config
-from .executor import ExecutionError, PlanExecutor
+from .executor import ExecutionError, ExecutionReason, PlanExecutor
 from .model import Plan
 from .perception import (
     CameraPerception,
+    DepthObservation,
     DropHazardMemory,
     ImagePerception,
     PerceptionProvider,
@@ -179,14 +181,26 @@ def _run_cycle(context: CycleContext) -> bool:
         message="Interpreting scene",
         **context.last_behavior,
     )
-    image = context.perception.capture()
+    capabilities = _robot_capabilities(context.config)
+    try:
+        image = context.perception.capture()
+    except (RuntimeError, ValueError) as error:
+        wrapped = ExecutionError(
+            ExecutionReason.ROBOT_PROTOCOL,
+            f"camera acquisition did not produce a usable scene: {error}",
+        )
+        return _run_visual_recovery(context, wrapped, None, capabilities, 0)
     depth = (
         context.drop_memory.update(context.perception.capture_depth())
         if isinstance(context.perception, SimulatorPerception)
         else None
     )
-    capabilities = _robot_capabilities(context.config)
-    scene = context.vision.interpret(image)
+    try:
+        scene = context.vision.interpret(image)
+    except ExecutionError as error:
+        if error.reason is not ExecutionReason.ROBOT_PROTOCOL:
+            raise
+        return _run_visual_recovery(context, error, depth, capabilities, len(image))
     scene_value = scene.to_dict()
     depth_value = depth.to_dict() if depth is not None else None
     capabilities_value = capabilities.to_dict()
@@ -261,6 +275,90 @@ def _run_cycle(context: CycleContext) -> bool:
         state="idle",
         message="Behavior completed",
         **behavior_status,
+    )
+    return True
+
+
+def _run_visual_recovery(
+    context: CycleContext,
+    error: ExecutionError,
+    depth: DepthObservation | None,
+    capabilities: RobotCapabilities,
+    image_bytes: int,
+) -> bool:
+    previous = context.recent_behaviors[-1] if context.recent_behaviors else None
+    action = {
+        "scan_left": "scan_right",
+        "scan_right": "scan_center",
+    }.get(previous, "scan_left")
+    target_y = {"scan_left": 0.35, "scan_right": -0.35, "scan_center": 0.0}[action]
+    plan = Plan.from_dict(
+        {
+            "schema_version": 1,
+            "plan_id": str(uuid.uuid4()),
+            "goal": "Acquire a valid semantic scene with a head-only scan",
+            "steps": [
+                {"id": "hold-body", "tool": "stop", "arguments": {}},
+                {
+                    "id": "scan",
+                    "tool": "look",
+                    "arguments": {
+                        "x": 0.5,
+                        "y": target_y,
+                        "z": 0.0,
+                        "neck_pitch": 0.0,
+                    },
+                },
+            ],
+            "requires_confirmation": False,
+        }
+    )
+    depth_value = depth.to_dict() if depth is not None else None
+    capabilities_value = capabilities.to_dict()
+    context.audit.write(
+        "perception.recovery_started",
+        reason=error.reason,
+        message=str(error),
+        action=action,
+        depth=depth_value,
+        capabilities=capabilities_value,
+        image_bytes=image_bytes,
+    )
+    _write_status(
+        context.status_file,
+        state="acquiring",
+        message="Semantic scene invalid; scanning with the head",
+        depth=depth_value,
+        capabilities=capabilities_value,
+        intent={"action": action},
+        actions=["stop", "look"],
+    )
+    if not _execute_plan(
+        context.config,
+        plan,
+        context.audit,
+        context.pause_file,
+        context.activity_file,
+    ):
+        return False
+    context.recent_behaviors.append(action)
+    del context.recent_behaviors[:-6]
+    context.last_behavior.clear()
+    context.last_behavior.update(
+        {
+            "depth": depth_value,
+            "capabilities": capabilities_value,
+            "observation": str(error),
+            "intent": {"action": action},
+            "actions": ["stop", "look"],
+            "utterance": "",
+        }
+    )
+    _write_status(
+        context.status_file,
+        state="idle",
+        message="Head acquisition completed; semantic vision will retry",
+        **context.last_behavior,
     )
     return True
 

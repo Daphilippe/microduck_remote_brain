@@ -461,7 +461,11 @@ def _scan_action(
         scene.free_floor == "unknown"
         and (depth is None or depth.center_clearance_mm is None)
     )
-    if not insufficient:
+    recent = recent_behaviors[-5:]
+    proactive_scan_due = len(recent) == 5 and not any(
+        behavior in SCAN_ACTIONS for behavior in recent
+    )
+    if not insufficient and not proactive_scan_due:
         return None
     return "scan_left"
 

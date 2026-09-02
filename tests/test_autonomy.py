@@ -530,6 +530,28 @@ def test_head_scan_completes_left_right_center_sequence(monkeypatch) -> None:
     assert captured_actions == [["scan_left"], ["scan_right"], ["scan_center"]]
 
 
+def test_valid_scene_gets_periodic_proactive_head_scan(monkeypatch) -> None:
+    response = Response(
+        json.dumps({"message": {"content": decision("scan_left")}}).encode()
+    )
+    captured: dict[str, Any] = {}
+
+    def urlopen(request, **_kwargs):
+        captured.update(json.loads(request.data))
+        return response
+
+    monkeypatch.setattr("microduck_remote_brain.autonomy.urllib.request.urlopen", urlopen)
+
+    OllamaPersonaModel("qwen", allow_movement=True).decide(
+        scene("A familiar clear area.", free_floor="clear"),
+        depth=depth(600, 600, 600),
+        capabilities=capabilities(),
+        recent_behaviors=("walk_forward", "coo", "curve_left", "sing", "turn_right"),
+    )
+
+    assert captured["format"]["properties"]["action"]["enum"] == ["scan_left"]
+
+
 def test_walk_mode_offers_occasional_loaded_special_actions(monkeypatch) -> None:
     response = Response(
         json.dumps({"message": {"content": decision("roulade")}}).encode()

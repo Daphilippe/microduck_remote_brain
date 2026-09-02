@@ -170,6 +170,13 @@ When visual context is insufficient, MicroDuck stops its body and scans only its
 then center through `robot.look`. The acquisition sequence remains subordinate to remembered-drop
 safety and the global action-disable latch.
 
+An unusable camera frame or invalid semantic scene triggers the same scan directly, before persona
+planning. MicroDuck therefore changes its viewpoint instead of remaining degraded and retrying an
+identical image. The invalid scene is never supplied to the action model.
+
+A valid scene also receives a proactive left/right/center scan after five behaviors without head
+acquisition, keeping object and person recognition spatially current.
+
 The gamepad client starts with the local stack and waits safely if the pad is
 asleep. A disconnect sends `robot.stop`; `robotd`'s deadman remains the final
 fallback. When no active gamepad slot is available for push-to-talk, the

@@ -86,6 +86,17 @@ The sequence completes even when the first side view is clear, so the next decis
 from both sides and the head returns to center. A remembered drop interrupts scanning and keeps its
 higher-priority stop or avoidance behavior.
 
+This acquisition also runs before persona planning when camera capture returns an unusable frame or
+when the vision model returns an invalid semantic scene. The failed scene is never passed to the
+persona. The worker records `perception.recovery_started`, executes deterministic `stop + look`, and
+retries from the new head pose on the next cycle. Local capture and semantic-format failures trigger
+the scan; an unreachable Ollama service remains a connection error because head movement cannot
+repair it.
+
+Even with valid semantics, five consecutive behaviors without a scan start a proactive
+left/right/center acquisition. This keeps nearby spatial understanding fresh instead of waiting for
+the VLM to admit uncertainty.
+
 Exploration is environment-independent: decisions use relative entity bearings, semantic floor
 state, and left/center/right ToF clearance. No room name, map coordinate, route, or apartment-specific
 object is encoded in the resolver. The simulation profiles run a new cycle every four seconds.
@@ -93,6 +104,7 @@ object is encoded in the resolver. The simulation profiles run a new cycle every
 The telemetry dashboard exposes the live persona state:
 
 - `observing`: the vision model is reading the current head-camera frame;
+- `acquiring`: an unusable or invalid scene is being replaced through a head-only scan;
 - `deciding`: the persona model is selecting one allowed behavior;
 - `acting`: the gated plan is being executed;
 - `idle`: the previous behavior completed and its action remains visible;

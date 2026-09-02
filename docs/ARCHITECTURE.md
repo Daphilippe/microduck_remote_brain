@@ -46,6 +46,10 @@ They constrain the schema itself: unavailable policies cannot be selected, and r
 walk-only scripted behaviors. Head scans are represented as deterministic `stop` plus `robot.look`
 plans, so acquisition changes camera direction without moving the trunk.
 
+Camera-format and semantic-scene failures enter that deterministic scan path before persona
+planning. This prevents repeated inference against one bad viewpoint and preserves the rule that an
+invalid scene cannot influence action selection.
+
 The simulation providers are replaceable:
 
 | Concern | Standalone | Full simulation | Physical target |
