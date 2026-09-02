@@ -35,6 +35,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--gamepad-button", type=int, default=0x0080)
     parser.add_argument("--gamepad-pause-file", type=Path)
     parser.add_argument("--autonomy-active-file", type=Path)
+    parser.add_argument("--actions-disabled-file", type=Path)
     parser.add_argument("--pid-file", type=Path)
     parser.add_argument("--text", help="skip audio and execute one text command")
     parser.add_argument("--once", action="store_true")
@@ -42,6 +43,8 @@ def _parser() -> argparse.ArgumentParser:
 
 
 def _execute_text(text: str, args: argparse.Namespace) -> None:
+    if args.actions_disabled_file is not None and args.actions_disabled_file.exists():
+        raise RuntimeError("all robot actions are disabled by the safety latch")
     plan = OllamaPlanner(args.ollama_model).plan(text)
     print(json.dumps(asdict(plan), indent=2, ensure_ascii=False))
     executor = PlanExecutor(
@@ -57,6 +60,8 @@ def _execute_text(text: str, args: argparse.Namespace) -> None:
             while args.autonomy_active_file is not None and args.autonomy_active_file.exists():
                 time.sleep(0.05)
             time.sleep(0.1)
+        if args.actions_disabled_file is not None and args.actions_disabled_file.exists():
+            raise RuntimeError("all robot actions are disabled by the safety latch")
         executor.execute(plan)
     finally:
         if pause_file is not None:

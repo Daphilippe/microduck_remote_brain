@@ -35,6 +35,30 @@ def test_bounded_walk_and_stop_are_allowed() -> None:
     assert decisions[-1].code == "plan.valid"
 
 
+def test_supported_interaction_skill_is_allowed() -> None:
+    plan = plan_with(
+        {"id": "pick-1", "tool": "skill", "arguments": {"name": "ground_pick"}}
+    )
+
+    decisions = validate_plan(plan)
+
+    assert plan_is_allowed(decisions)
+
+
+def test_bounded_head_scan_is_allowed() -> None:
+    plan = plan_with(
+        {
+            "id": "look-1",
+            "tool": "look",
+            "arguments": {"x": 0.5, "y": -0.35, "z": 0.0, "neck_pitch": 0.0},
+        }
+    )
+
+    decisions = validate_plan(plan)
+
+    assert plan_is_allowed(decisions)
+
+
 def test_velocity_over_limit_is_denied_with_stable_code() -> None:
     decisions = validate_plan(plan_with(walk_step(linear_velocity=0.31)))
 

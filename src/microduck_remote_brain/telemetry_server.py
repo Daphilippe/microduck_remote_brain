@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import base64
 import json
+import math
 import socket
 import threading
 import time
@@ -11,34 +12,184 @@ from collections.abc import Sequence
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+from .robotd import RobotdClient
+
 DASHBOARD = """<!doctype html>
-<html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>MicroDuck telemetry</title><style>
-:root{color-scheme:dark;font:14px system-ui,sans-serif}body{margin:0;background:#10151b;color:#e8edf2}main{max-width:1200px;margin:auto;padding:20px}h1{font-size:22px;margin:0 0 4px}p{color:#aab6c2}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}.card{background:#19212a;border:1px solid #30404e;border-radius:8px;padding:14px}.video{grid-column:span 2}h2{font-size:15px;margin:0 0 12px;color:#72d6c9}.camera{display:block;width:100%;aspect-ratio:4/3;object-fit:contain;background:#050708}.metrics{display:grid;grid-template-columns:1fr 1fr;gap:8px}.metric{background:#111820;padding:8px}.metric b{display:block;font-size:18px}.metric small{color:#93a3b1}.joints{display:grid;grid-template-columns:1fr 1fr;gap:5px}.joint{display:flex;justify-content:space-between;background:#111820;padding:5px 7px}.tof{display:grid;grid-template-columns:repeat(8,1fr);gap:3px}.zone{aspect-ratio:1;display:grid;place-items:center;font-size:10px;color:#061014;border-radius:2px}.muted{color:#aab6c2}.ok{color:#72d6c9}.warning{color:#f4bf68}code{color:#b9d9ff}@media(max-width:700px){.video{grid-column:span 1}}
-</style></head><body><main><h1>MicroDuck · télémétrie</h1><p id="updated">Connexion...</p><section class="grid"><article class="card video"><h2>Caméra tête</h2><img class="camera" src="/api/camera/stream" alt="Flux de la caméra tête du MicroDuck"><p class="muted">Vue embarquée fournie par la source de simulation active.</p></article><article class="card"><h2>Persona autonome</h2><div id="persona" class="metrics"></div><p id="persona-observation" class="muted"></p></article><article class="card"><h2>État du robot</h2><div id="metrics" class="metrics"></div></article><article class="card"><h2>IMU</h2><div id="imu" class="metrics"></div></article><article class="card"><h2>Articulations</h2><div id="joints" class="joints"></div></article><article class="card"><h2>ToF / lidar 8×8</h2><div id="tof" class="tof"></div><p class="muted">Distances en mm, mise à jour à 15 Hz selon le modèle du VL53L5CX.</p></article></section></main><script>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>MicroDuck command center</title><style>
+:root{color-scheme:dark;font:14px system-ui,sans-serif}body{margin:0;background:#10151b;color:#e8edf2}main{max-width:1200px;margin:auto;padding:20px}h1{font-size:22px;margin:0 0 4px}p{color:#aab6c2}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}.card{background:#19212a;border:1px solid #30404e;border-radius:8px;padding:14px}.video{grid-column:span 2}h2{font-size:15px;margin:0 0 12px;color:#72d6c9}.camera{display:block;width:100%;aspect-ratio:4/3;object-fit:contain;background:#050708}.metrics{display:grid;grid-template-columns:1fr 1fr;gap:8px}.metric{background:#111820;padding:8px}.metric b{display:block;font-size:18px}.metric small{color:#93a3b1}.joints{display:grid;grid-template-columns:1fr 1fr;gap:5px}.joint{display:flex;justify-content:space-between;background:#111820;padding:5px 7px}.tof{display:grid;grid-template-columns:repeat(8,1fr);gap:3px}.zone{aspect-ratio:1;display:grid;place-items:center;font-size:10px;color:#061014;border-radius:2px}.muted{color:#aab6c2}.ok{color:#72d6c9}.warning{color:#f4bf68}code{color:#b9d9ff}.controls{display:flex;flex-wrap:wrap;gap:7px;margin:8px 0}.controls button,.controls select{min-height:36px;border:1px solid #496171;background:#111820;color:#e8edf2;padding:7px 10px;border-radius:4px}.controls button:active,.controls button.active{background:#28776d}.danger{border-color:#a85d5d!important}.action-list{width:100%;border-collapse:collapse}.action-list td{padding:5px;border-bottom:1px solid #30404e}.action-list td:first-child{color:#72d6c9;white-space:nowrap}.wide{grid-column:1/-1}@media(max-width:700px){.video{grid-column:span 1}.wide{grid-column:span 1}}
+</style></head><body><main><h1>MicroDuck command center</h1><p id="updated">Connecting...</p><section class="grid"><article class="card video"><h2>Camera input</h2><img class="camera" src="/api/camera/stream" alt="MicroDuck head camera stream"></article><article class="card"><h2>Scene semantics</h2><div id="scene" class="metrics"></div><p id="scene-summary" class="muted"></p></article><article class="card"><h2>Autonomous persona</h2><div id="persona" class="metrics"></div><p id="persona-utterance" class="muted"></p></article><article class="card wide"><h2>Command center</h2><div class="controls"><button id="manual">Manual control</button><button id="resume">Resume persona</button><button id="gamepad">Enable browser gamepad</button><button id="stop" class="danger">Stop</button></div><p id="control-status" class="muted">Persona owns the robot.</p><div class="controls"><button data-move='{"vx":0.2,"vy":0,"vyaw":0}'>Forward</button><button data-move='{"vx":-0.2,"vy":0,"vyaw":0}'>Back</button><button data-move='{"vx":0,"vy":0.2,"vyaw":0}'>Left</button><button data-move='{"vx":0,"vy":-0.2,"vyaw":0}'>Right</button><button data-move='{"vx":0,"vy":0,"vyaw":0.5}'>Turn left</button><button data-move='{"vx":0,"vy":0,"vyaw":-0.5}'>Turn right</button><button data-look='{"x":0.5,"y":0.3,"z":0}'>Look left</button><button data-look='{"x":0.5,"y":0,"z":0}'>Look center</button><button data-look='{"x":0.5,"y":-0.3,"z":0}'>Look right</button></div><div class="controls"><button data-action="enable_toggle">Enable / disable</button><button data-action="init">Stand up</button><button data-skill="sit_toggle">Sit / stand</button><button data-skill="ground_pick">Ground pick</button><button data-skill="kick_left">Kick left</button><button data-skill="kick_right">Kick right</button><button data-skill="roulade">Roulade</button><button data-action="relax" class="danger">Relax</button><button data-action="shutdown" class="danger">Shut down</button></div><div class="controls"><select id="sound"><option>chirp</option><option>greet</option><option>inquire</option><option>alarm</option><option>peck</option><option>coo</option></select><button id="sound-play">Play sound</button><button data-mode="walk">Walk mode</button><button data-mode="roller">Roller mode</button><button data-theremin="true">Theremin on</button><button data-theremin="false">Theremin off</button><button data-chorale="true">Chorale on</button><button data-chorale="false">Chorale off</button></div></article><article class="card wide"><h2>Available actions and controller mapping</h2><table class="action-list"><tr><td>Left stick</td><td>Drive forward/back and strafe</td></tr><tr><td>Right stick X</td><td>Turn; in Head mode it rolls the head</td></tr><tr><td>Start</td><td>Toggle policy</td></tr><tr><td>Y</td><td>Toggle Head mode</td></tr><tr><td>B</td><td>Toggle Body-pose mode</td></tr><tr><td>A</td><td>Ground pick</td></tr><tr><td>X</td><td>Roulade; hold to chain</td></tr><tr><td>LB / RB</td><td>Left / right kick</td></tr><tr><td>D-pad Down</td><td>Sit / stand</td></tr><tr><td>D-pad Up, hold 3 s</td><td>Walk / roller mode</td></tr><tr><td>RT / LT</td><td>Mouth + chirp / wheee</td></tr><tr><td>Back, hold 2 s</td><td>Sit and shut down</td></tr><tr><td>Right stick click</td><td>Push-to-talk (project addition)</td></tr><tr><td>D-pad Left / Right</td><td>Unassigned</td></tr><tr><td>Left stick click</td><td>Unassigned</td></tr><tr><td>Command center only</td><td>Look target, stand, relax, stop, individual sounds, theremin, chorale</td></tr></table></article><article class="card"><h2>Robot state</h2><div id="metrics" class="metrics"></div></article><article class="card"><h2>IMU</h2><div id="imu" class="metrics"></div></article><article class="card"><h2>Joints</h2><div id="joints" class="joints"></div></article><article class="card"><h2>ToF / lidar 8×8</h2><div id="tof" class="tof"></div></article></section></main><script>
 const esc=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const metric=(name,value,unit='')=>`<div class="metric"><small>${esc(name)}</small><b>${esc(value)} <small>${esc(unit)}</small></b></div>`;
 async function checked(path){const response=await fetch(path,{cache:'no-store'});if(!response.ok){const body=await response.json().catch(()=>({}));throw new Error(body.error||`HTTP ${response.status}`)}return response.json()}
+async function post(path,value={}){const response=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(value)});const body=await response.json().catch(()=>({}));if(!response.ok)throw new Error(body.error||`HTTP ${response.status}`);return body}
 async function refresh(){try{const [state,tof,persona]=await Promise.all([checked('/api/state'),checked('/api/tof'),checked('/api/autonomy')]);const imu=state.imu||{};
-document.querySelector('#updated').innerHTML='<span class="ok">Connecté</span> · sim_time '+Number(state.sim_time||0).toFixed(2)+' s · trunk '+(state.trunk||[]).map(x=>Number(x).toFixed(3)).join(', ');
-document.querySelector('#persona').innerHTML=[metric('État',persona.state||'inconnu'),metric('Action',(persona.actions||[]).join(' + ')||'—'),metric('Message',persona.message||'—'),metric('Âge',Number(persona.age_seconds||0).toFixed(0),'s')].join('');
-document.querySelector('#persona-observation').textContent=persona.observation||'Aucune observation terminée.';
-document.querySelector('#metrics').innerHTML=[metric('Trunk Z',Number(state.trunk_z||0).toFixed(3),'m'),metric('Tension',Number(state.volts||7.4).toFixed(2),'V'),metric('Vitesse X',Number((state.base_velocity||[0])[0]||0).toFixed(3),'m/s'),metric('Température',Number((state.temps_c||[32])[0]||32).toFixed(1),'°C')].join('');
-document.querySelector('#imu').innerHTML=[metric('Gravité', (imu.gravity||[]).map(x=>Number(x).toFixed(2)).join(', ')),metric('Gyroscope',(imu.gyro||[]).map(x=>Number(x).toFixed(2)).join(', ')),metric('Quaternion',(imu.quat||[]).map(x=>Number(x).toFixed(2)).join(', '))].join('');
+const scene=persona.scene||{},depth=persona.depth||{};document.querySelector('#updated').innerHTML='<span class="ok">Connected</span> · sim_time '+Number(state.sim_time||0).toFixed(2)+' s · trunk '+(state.trunk||[]).map(x=>Number(x).toFixed(3)).join(', ');
+document.querySelector('#scene').innerHTML=[metric('Free floor',scene.free_floor||'unknown'),metric('Visibility',scene.visibility||'unknown'),metric('Entities',(scene.entities||[]).map(x=>x.kind).join(', ')||'none'),metric('Hazards',(scene.hazards||[]).join(', ')||'none'),metric('ToF clearance',[depth.left_clearance_mm,depth.center_clearance_mm,depth.right_clearance_mm].map(x=>x==null?'?':Math.round(x)).join(' / '),'mm'),metric('Drop memory',depth.drop_hazard_remembered?'latched':'clear')].join('');
+document.querySelector('#scene-summary').textContent=scene.summary||persona.observation||'No completed scene interpretation.';
+document.querySelector('#persona').innerHTML=[metric('State',persona.state||'unknown'),metric('Action',(persona.actions||[]).join(' + ')||'none'),metric('Voice',persona.voice_style||'none'),metric('Age',Number(persona.age_seconds||0).toFixed(0),'s')].join('');
+document.querySelector('#persona-utterance').textContent=persona.utterance||persona.message||'No persona utterance.';
+const actionsEnabled=persona.actions_enabled!==false,actionsToggle=document.querySelector('#actions-toggle');actionsToggle.textContent=actionsEnabled?'Disable all actions':'Enable all actions';actionsToggle.classList.toggle('active',!actionsEnabled);document.querySelectorAll('button:not(#actions-toggle):not(#stop),select').forEach(control=>control.disabled=!actionsEnabled);
+document.querySelector('#metrics').innerHTML=[metric('Trunk Z',Number(state.trunk_z||0).toFixed(3),'m'),metric('Voltage',Number(state.volts||7.4).toFixed(2),'V'),metric('X velocity',Number((state.base_velocity||[0])[0]||0).toFixed(3),'m/s'),metric('Temperature',Number((state.temps_c||[32])[0]||32).toFixed(1),'°C')].join('');
+document.querySelector('#imu').innerHTML=[metric('Gravity', (imu.gravity||[]).map(x=>Number(x).toFixed(2)).join(', ')),metric('Gyroscope',(imu.gyro||[]).map(x=>Number(x).toFixed(2)).join(', ')),metric('Quaternion',(imu.quat||[]).map(x=>Number(x).toFixed(2)).join(', '))].join('');
 document.querySelector('#joints').innerHTML=(state.positions||[]).map((v,i)=>`<div class="joint"><span>J${i}</span><code>${Number(v).toFixed(3)} rad</code></div>`).join('');
 const values=tof.distance_mm||[], max=Math.max(1,...values);document.querySelector('#tof').innerHTML=values.map((v,i)=>{const ratio=v?Math.min(1,v/max):0;const color=v?`hsl(${Math.round(190-190*ratio)},80%,60%)`:'#394550';return `<div class="zone" title="zone ${i}: ${v||'no target'} mm" style="background:${color}">${v?Math.round(v):'·'}</div>`}).join('');
-}catch(error){document.querySelector('#updated').innerHTML='<span class="warning">Déconnecté : '+esc(error)+'</span>'}}
-refresh();setInterval(refresh,500);
+}catch(error){document.querySelector('#updated').innerHTML='<span class="warning">Disconnected: '+esc(error)+'</span>'}}
+const status=text=>document.querySelector('#control-status').textContent=text;
+const actionsToggle=document.createElement('button');actionsToggle.id='actions-toggle';actionsToggle.className='danger';actionsToggle.textContent='Disable all actions';document.querySelector('#manual').parentElement.prepend(actionsToggle);
+document.querySelector('#manual').onclick=()=>post('/api/persona/pause').then(()=>status('Manual control owns the robot.')).catch(status);
+document.querySelector('#resume').onclick=()=>post('/api/persona/resume').then(()=>status('Persona owns the robot.')).catch(status);
+actionsToggle.onclick=()=>{const enable=actionsToggle.textContent.startsWith('Enable');post(enable?'/api/actions/enable':'/api/actions/disable').then(()=>status(enable?'All robot actions enabled.':'All robot actions disabled and robot stopped.')).then(refresh).catch(status)};
+document.querySelector('#stop').onclick=()=>post('/api/control',{action:'stop'}).then(()=>status('Stop accepted.')).catch(status);
+document.querySelectorAll('[data-action]').forEach(button=>button.onclick=()=>post('/api/control',{action:button.dataset.action}).catch(status));
+document.querySelectorAll('[data-skill]').forEach(button=>button.onclick=()=>post('/api/control',{action:'skill',skill:button.dataset.skill}).catch(status));
+document.querySelectorAll('[data-mode]').forEach(button=>button.onclick=()=>post('/api/control',{action:'mode',mode:button.dataset.mode}).catch(status));
+document.querySelectorAll('[data-theremin]').forEach(button=>button.onclick=()=>post('/api/control',{action:'theremin',active:button.dataset.theremin==='true'}).catch(status));
+document.querySelectorAll('[data-chorale]').forEach(button=>button.onclick=()=>post('/api/control',{action:'chorale',active:button.dataset.chorale==='true'}).catch(status));
+document.querySelectorAll('[data-look]').forEach(button=>button.onclick=()=>post('/api/control',{action:'look',...JSON.parse(button.dataset.look)}).catch(status));
+document.querySelector('#sound-play').onclick=()=>post('/api/control',{action:'sound',tag:document.querySelector('#sound').value}).catch(status);
+document.querySelectorAll('[data-move]').forEach(button=>{let timer;const end=()=>{clearInterval(timer);timer=null;post('/api/control',{action:'stop'}).catch(status);button.classList.remove('active')};button.onpointerdown=()=>{const twist=JSON.parse(button.dataset.move);post('/api/persona/pause').then(()=>post('/api/control',{action:'move',...twist})).catch(status);timer=setInterval(()=>post('/api/control',{action:'move',...twist}).catch(status),100);button.classList.add('active')};button.onpointerup=end;button.onpointercancel=end;button.onpointerleave=()=>{if(timer)end()}});
+let browserPad=false,previousButtons=[],padMode='drive',padModeRoller=false,backHeld=0,upHeld=0,lastRt=0,lastLt=0;
+document.querySelector('#gamepad').onclick=()=>{browserPad=!browserPad;document.querySelector('#gamepad').classList.toggle('active',browserPad);if(browserPad)post('/api/persona/pause').then(()=>status('Browser gamepad active.')).catch(status);else post('/api/control',{action:'stop'}).then(()=>post('/api/persona/resume')).then(()=>status('Persona owns the robot.')).catch(status)};
+setInterval(()=>{if(!browserPad)return;const pad=navigator.getGamepads?.()[0];if(!pad){status('Waiting for browser gamepad...');return}const dead=v=>Math.abs(v)<0.1?0:v;const buttons=pad.buttons.map(x=>x.pressed);const edge=i=>buttons[i]&&!previousButtons[i];const lx=dead(pad.axes[0]||0),ly=dead(pad.axes[1]||0),rx=dead(pad.axes[2]||0),ry=dead(pad.axes[3]||0),rt=pad.buttons[7]?.value||0,lt=pad.buttons[6]?.value||0;
+if(edge(9))post('/api/control',{action:'enable_toggle'}).catch(status);if(edge(3)){padMode=padMode==='head'?'drive':'head';status(`Browser gamepad: ${padMode} mode.`)}if(edge(1)){padMode=padMode==='body'?'drive':'body';status(`Browser gamepad: ${padMode} mode.`)}
+if(edge(0))post('/api/control',{action:'skill',skill:'ground_pick'}).catch(status);if(edge(2))post('/api/control',{action:'skill',skill:'roulade'}).catch(status);else if(buttons[2])post('/api/control',{action:'skill',skill:'roulade',notify:true}).catch(status);if(edge(4))post('/api/control',{action:'skill',skill:'kick_left'}).catch(status);if(edge(5))post('/api/control',{action:'skill',skill:'kick_right'}).catch(status);if(edge(13))post('/api/control',{action:'skill',skill:'sit_toggle'}).catch(status);
+if(buttons[8]){if(!backHeld)backHeld=performance.now();else if(performance.now()-backHeld>2000){post('/api/control',{action:'shutdown'}).catch(status);backHeld=Infinity}}else backHeld=0;if(buttons[12]){if(!upHeld)upHeld=performance.now();else if(performance.now()-upHeld>3000){padModeRoller=!padModeRoller;post('/api/control',{action:'mode',mode:padModeRoller?'roller':'walk'}).catch(status);upHeld=Infinity}}else upHeld=0;
+if(padMode==='drive')post('/api/control',{action:'move',vx:-ly*0.3,vy:-lx*0.3,vyaw:-rx*1.5}).catch(status);else if(padMode==='head')post('/api/control',{action:'head',neck_pitch:-ry*2.5,head_pitch:ly*2.5,head_yaw:-lx*2.5,head_roll:rx*2.5}).catch(status);else{const leftY=-ly,rightY=-ry;post('/api/control',{action:'pose',z:leftY*(leftY>=0?0.01:0.025),roll:rx*0.2618,pitch:rightY*0.2618,active:true}).catch(status)}
+post('/api/control',{action:'mouth',opening:Math.max(rt,lt)}).catch(status);if(lastRt<0.3&&rt>=0.3)post('/api/control',{action:'sound',tag:'chirp'}).catch(status);if(lt>=0.3)post('/api/control',{action:'sound',tag:'wheee',hold:true}).catch(status);else if(lastLt>=0.3)post('/api/control',{action:'sound',tag:'wheee',hold:false}).catch(status);lastRt=rt;lastLt=lt;previousButtons=buttons},50);
+refresh();setInterval(refresh,33);
 </script></body></html>"""
 
 
 MAX_RESPONSE_BYTES = 8 * 1024 * 1024
 MAX_STATUS_BYTES = 64 * 1024
+TELEMETRY_HZ = 30.0
+TELEMETRY_PERIOD = 1.0 / TELEMETRY_HZ
+CONTROL_ACTIONS = (
+    "stop",
+    "move",
+    "enable_toggle",
+    "init",
+    "relax",
+    "shutdown",
+    "skill",
+    "sound",
+    "head",
+    "look",
+    "pose",
+    "mouth",
+    "mode",
+    "theremin",
+    "chorale",
+)
+CONTROL_SKILLS = frozenset({"sit_toggle", "ground_pick", "kick_left", "kick_right", "roulade"})
+CONTROL_SOUNDS = frozenset({"alarm", "greet", "inquire", "peck", "chirp", "coo", "wheee"})
+
+
+def dispatch_control(host: str, port: int, command: object) -> None:  # pylint: disable=too-many-branches
+    if not isinstance(command, dict) or not isinstance(command.get("action"), str):
+        raise ValueError("control command requires an action")
+    action = command["action"]
+    if action not in CONTROL_ACTIONS:
+        raise ValueError(f"unsupported control action: {action}")
+    robot = RobotdClient(host=host, port=port)
+    robot.connect()
+    try:
+        if action == "stop":
+            robot.stop()
+        elif action == "move":
+            vx = _bounded_number(command, "vx", 0.3)
+            vy = _bounded_number(command, "vy", 0.3)
+            vyaw = _bounded_number(command, "vyaw", 1.5)
+            robot.move_twist(vx, vy, vyaw)
+        elif action == "enable_toggle":
+            robot.toggle_enable()
+        elif action == "init":
+            robot.init()
+        elif action == "relax":
+            robot.relax()
+        elif action == "shutdown":
+            robot.shutdown()
+        elif action == "skill":
+            skill = command.get("skill")
+            if skill not in CONTROL_SKILLS:
+                raise ValueError("unsupported skill")
+            notify = command.get("notify", False)
+            if not isinstance(notify, bool):
+                raise ValueError("skill notify must be boolean")
+            robot.skill(str(skill), notify=notify)
+        elif action == "sound":
+            tag = command.get("tag")
+            if tag not in CONTROL_SOUNDS:
+                raise ValueError("unsupported sound")
+            hold = command.get("hold")
+            if hold is not None and not isinstance(hold, bool):
+                raise ValueError("sound hold must be boolean")
+            robot.sound(str(tag), hold)
+        elif action == "head":
+            robot.head(
+                _bounded_number(command, "neck_pitch", 2.5),
+                _bounded_number(command, "head_pitch", 2.5),
+                _bounded_number(command, "head_yaw", 2.5),
+                _bounded_number(command, "head_roll", 2.5),
+            )
+        elif action == "look":
+            robot.look(
+                _bounded_number(command, "x", 2.0, minimum=0.05),
+                _bounded_number(command, "y", 2.0),
+                _bounded_number(command, "z", 2.0),
+                _bounded_number(command, "neck_pitch", 1.0),
+            )
+        elif action == "pose":
+            active = command.get("active", True)
+            if not isinstance(active, bool):
+                raise ValueError("pose active must be boolean")
+            robot.pose(
+                _bounded_number(command, "z", 0.025),
+                _bounded_number(command, "roll", 0.2618),
+                _bounded_number(command, "pitch", 0.2618),
+                active=active,
+            )
+        elif action == "mouth":
+            robot.mouth(_bounded_number(command, "opening", 1.0, minimum=0.0))
+        elif action == "mode":
+            mode = command.get("mode")
+            if mode not in {"walk", "roller"}:
+                raise ValueError("mode must be walk or roller")
+            robot.set_mode(str(mode))
+        elif action == "theremin":
+            active = command.get("active")
+            if not isinstance(active, bool):
+                raise ValueError("theremin active must be boolean")
+            robot.theremin(active)
+        else:
+            active = command.get("active")
+            piece = command.get("piece")
+            if not isinstance(active, bool):
+                raise ValueError("chorale active must be boolean")
+            if piece is not None and (isinstance(piece, bool) or not isinstance(piece, int)):
+                raise ValueError("chorale piece must be an integer")
+            robot.chorale(active, piece)
+    finally:
+        robot.close()
+
+
+def _bounded_number(
+    command: dict[object, object], name: str, maximum: float, *, minimum: float | None = None
+) -> float:
+    value = command.get(name, 0.0)
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise ValueError(f"{name} must be a number")
+    result = float(value)
+    lower = -maximum if minimum is None else minimum
+    if not math.isfinite(result) or not lower <= result <= maximum:
+        raise ValueError(f"{name} is outside its allowed range")
+    return result
 
 
 def read_autonomy_status(path: Path | None) -> dict[str, object]:
     if path is None or not path.is_file():
-        return {"state": "stopped", "message": "Persona non démarré", "age_seconds": 0.0}
+        return {"state": "stopped", "message": "Persona not started", "age_seconds": 0.0}
     if path.stat().st_size > MAX_STATUS_BYTES:
         raise RuntimeError("autonomy status exceeds the size limit")
     try:
@@ -54,11 +205,15 @@ def read_autonomy_status(path: Path | None) -> dict[str, object]:
     result["age_seconds"] = max(0.0, time.time() - float(updated_at))
     if result["age_seconds"] > 300:
         result["state"] = "stale"
-        result["message"] = "Aucune mise à jour récente du persona"
+        result["message"] = "No recent persona update"
     observation = result.get("observation")
     if isinstance(observation, str):
         result["observation"] = observation[:500]
     return result
+
+
+def actions_are_enabled(path: Path | None) -> bool:
+    return path is None or not path.exists()
 
 
 def read_simulator(host: str, port: int, operation: str) -> dict[str, object]:
@@ -148,17 +303,22 @@ class Handler(BaseHTTPRequestHandler):
     simulator_port = 7801
     cache = SimulatorCache(simulator_host, simulator_port)
     autonomy_status_file: Path | None = None
+    manual_active_file: Path | None = None
+    actions_disabled_file: Path | None = None
+    control_enabled = False
+    robot_host = "127.0.0.1"
+    robot_port = 8765
 
     def do_GET(self) -> None:  # noqa: N802
         try:
             if self.path == "/":
                 self._send(200, "text/html; charset=utf-8", DASHBOARD.encode())
             elif self.path == "/api/state":
-                self._send_json(self.cache.get("state", 0.1))
+                self._send_json(self.cache.get("state", TELEMETRY_PERIOD))
             elif self.path == "/api/tof":
-                self._send_json(self.cache.get("tof", 0.1))
+                self._send_json(self.cache.get("tof", TELEMETRY_PERIOD))
             elif self.path == "/api/camera.jpg":
-                jpeg = self.cache.get("camera", 0.08)
+                jpeg = self.cache.get("camera", TELEMETRY_PERIOD)
                 if not isinstance(jpeg, bytes):
                     raise RuntimeError("camera cache returned an invalid frame")
                 self._send(200, "image/jpeg", jpeg)
@@ -168,11 +328,59 @@ class Handler(BaseHTTPRequestHandler):
                 self.cache.get("state", 0.5)
                 self._send_json({"status": "ok", "simulator": "connected"})
             elif self.path == "/api/autonomy":
-                self._send_json(read_autonomy_status(self.autonomy_status_file))
+                status = read_autonomy_status(self.autonomy_status_file)
+                status["actions_enabled"] = actions_are_enabled(self.actions_disabled_file)
+                self._send_json(status)
             else:
                 self._send_json({"error": "not found"}, 404)
         except (OSError, RuntimeError, ValueError) as error:
             self._send_json({"error": str(error)}, 503)
+
+    def do_POST(self) -> None:  # noqa: N802
+        try:
+            if self.path == "/api/actions/disable" and self.control_enabled:
+                if self.actions_disabled_file is None:
+                    raise RuntimeError("action safety file is not configured")
+                self.actions_disabled_file.parent.mkdir(parents=True, exist_ok=True)
+                self.actions_disabled_file.touch()
+                dispatch_control(self.robot_host, self.robot_port, {"action": "stop"})
+                self._send_json({"status": "ok", "actions_enabled": False})
+                return
+            if self.path == "/api/actions/enable" and self.control_enabled:
+                if self.actions_disabled_file is not None:
+                    self.actions_disabled_file.unlink(missing_ok=True)
+                self._send_json({"status": "ok", "actions_enabled": True})
+                return
+            if self.path == "/api/persona/pause" and self.control_enabled:
+                if self.manual_active_file is None:
+                    raise RuntimeError("manual control file is not configured")
+                self.manual_active_file.parent.mkdir(parents=True, exist_ok=True)
+                self.manual_active_file.touch()
+                self._send_json({"status": "ok", "persona": "paused"})
+                return
+            if self.path == "/api/persona/resume" and self.control_enabled:
+                if self.manual_active_file is not None:
+                    self.manual_active_file.unlink(missing_ok=True)
+                self._send_json({"status": "ok", "persona": "active"})
+                return
+            if self.path != "/api/control" or not self.control_enabled:
+                self._send_json({"error": "control is disabled"}, 403)
+                return
+            length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0 or length > MAX_STATUS_BYTES:
+                raise ValueError("control request has an invalid size")
+            command = json.loads(self.rfile.read(length))
+            if (
+                not actions_are_enabled(self.actions_disabled_file)
+                and isinstance(command, dict)
+                and command.get("action") != "stop"
+            ):
+                self._send_json({"error": "all robot actions are disabled"}, 423)
+                return
+            dispatch_control(self.robot_host, self.robot_port, command)
+            self._send_json({"status": "accepted"})
+        except (json.JSONDecodeError, OSError, RuntimeError, ValueError) as error:
+            self._send_json({"error": str(error)}, 400)
 
     def _send_json(self, value: object, status: int = 200) -> None:
         self._send(status, "application/json", json.dumps(value, allow_nan=False).encode())
@@ -190,9 +398,10 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=frame")
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
+        next_frame = time.monotonic()
         try:
             while True:
-                jpeg = self.cache.get("camera", 0.08)
+                jpeg = self.cache.get("camera", TELEMETRY_PERIOD)
                 if not isinstance(jpeg, bytes):
                     raise RuntimeError("camera cache returned an invalid frame")
                 self.wfile.write(b"--frame\r\nContent-Type: image/jpeg\r\n")
@@ -200,7 +409,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(jpeg)
                 self.wfile.write(b"\r\n")
                 self.wfile.flush()
-                time.sleep(0.1)
+                next_frame += TELEMETRY_PERIOD
+                remaining = next_frame - time.monotonic()
+                if remaining > 0:
+                    time.sleep(remaining)
+                elif remaining < -TELEMETRY_PERIOD:
+                    next_frame = time.monotonic()
         except (BrokenPipeError, ConnectionResetError, OSError, RuntimeError, ValueError):
             pass
 
@@ -218,11 +432,21 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--listen-host", default="0.0.0.0")
     parser.add_argument("--listen-port", type=int, default=8780)
     parser.add_argument("--autonomy-status-file", type=Path)
+    parser.add_argument("--manual-active-file", type=Path)
+    parser.add_argument("--actions-disabled-file", type=Path)
+    parser.add_argument("--enable-control", action="store_true")
+    parser.add_argument("--robot-host", default="127.0.0.1")
+    parser.add_argument("--robot-port", type=int, default=8765)
     args = parser.parse_args(argv)
     Handler.simulator_host = args.simulator_host
     Handler.simulator_port = args.simulator_port
     Handler.cache = SimulatorCache(args.simulator_host, args.simulator_port)
     Handler.autonomy_status_file = args.autonomy_status_file
+    Handler.manual_active_file = args.manual_active_file
+    Handler.actions_disabled_file = args.actions_disabled_file
+    Handler.control_enabled = args.enable_control
+    Handler.robot_host = args.robot_host
+    Handler.robot_port = args.robot_port
     with ThreadingHTTPServer((args.listen_host, args.listen_port), Handler) as server:
         print(f"telemetry dashboard listening on {args.listen_host}:{args.listen_port}", flush=True)
         server.serve_forever()

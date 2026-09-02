@@ -12,6 +12,7 @@ MAX_LINEAR_VELOCITY = 0.3
 MAX_ANGULAR_VELOCITY = 1.5
 MAX_DURATION = 10.0
 SOUND_TAGS = frozenset({"alarm", "greet", "inquire", "peck", "chirp", "coo"})
+SKILL_NAMES = frozenset({"sit_toggle", "ground_pick", "kick_left", "kick_right", "roulade"})
 
 
 def _decision(gate: str, status: GateStatus, code: str, **facts: Any) -> GateDecision:
@@ -106,6 +107,41 @@ def _validate_sound(step: ActionStep) -> GateDecision:
     return _decision("capability", GateStatus.ALLOW, "sound.valid", step_id=step.id)
 
 
+def _validate_skill(step: ActionStep) -> GateDecision:
+    if set(step.arguments) != {"name"}:
+        return _decision(
+            "capability",
+            GateStatus.DENY,
+            "skill.arguments",
+            step_id=step.id,
+            unknown=sorted(set(step.arguments) - {"name"}),
+        )
+    name = step.arguments["name"]
+    if not isinstance(name, str) or name not in SKILL_NAMES:
+        return _decision(
+            "capability",
+            GateStatus.DENY,
+            "skill.unknown_name",
+            step_id=step.id,
+            name=name,
+            allowed=sorted(SKILL_NAMES),
+        )
+    return _decision("capability", GateStatus.ALLOW, "skill.valid", step_id=step.id)
+
+
+def _validate_look(step: ActionStep) -> GateDecision:
+    expected = {"x", "y", "z", "neck_pitch"}
+    if set(step.arguments) != expected:
+        return _decision("capability", GateStatus.DENY, "look.arguments", step_id=step.id)
+    if not all(_finite_number(step.arguments[name]) for name in expected):
+        return _decision("format", GateStatus.DENY, "look.not_finite", step_id=step.id)
+    if not 0.05 <= step.arguments["x"] <= 2.0 or abs(step.arguments["y"]) > 2.0:
+        return _decision("safety", GateStatus.DENY, "look.target_out_of_range", step_id=step.id)
+    if abs(step.arguments["z"]) > 2.0 or abs(step.arguments["neck_pitch"]) > 1.0:
+        return _decision("safety", GateStatus.DENY, "look.target_out_of_range", step_id=step.id)
+    return _decision("capability", GateStatus.ALLOW, "look.valid", step_id=step.id)
+
+
 def validate_plan(plan: Plan) -> tuple[GateDecision, ...]:
     decisions: list[GateDecision] = []
     if plan.schema_version != SCHEMA_VERSION:
@@ -141,7 +177,13 @@ def validate_plan(plan: Plan) -> tuple[GateDecision, ...]:
             _decision("format", GateStatus.DENY, "plan.step_ids"),
         )
 
-    validators = {"walk": _validate_walk, "stop": _validate_stop, "sound": _validate_sound}
+    validators = {
+        "walk": _validate_walk,
+        "stop": _validate_stop,
+        "sound": _validate_sound,
+        "skill": _validate_skill,
+        "look": _validate_look,
+    }
     for step in plan.steps:
         validator = validators.get(step.tool)
         if validator is None:

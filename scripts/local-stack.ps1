@@ -3,7 +3,7 @@ param(
     [ValidateSet("start", "status", "text", "stop")]
     [string]$Action = "start",
     [string]$Scene = "apartment",
-    [string]$OllamaModel = "qwen3-vl:8b",
+    [string]$OllamaModel = "qwen3:0.6b",
     [string]$Microphone = "1",
     [ValidateSet("auto", "gamepad", "keyboard")]
     [string]$Trigger = "auto",
@@ -116,7 +116,11 @@ function Start-TelemetryServer {
             "-u", "-m", "microduck_remote_brain.telemetry_server",
             "--simulator-host", "127.0.0.1", "--simulator-port", "7801",
             "--listen-host", "0.0.0.0", "--listen-port", "$TelemetryPort",
-            "--autonomy-status-file", (Join-Path $LocalState "autonomy-state.json")
+            "--autonomy-status-file", (Join-Path $LocalState "autonomy-state.json"),
+            "--manual-active-file", (Join-Path $LocalState "manual-active"),
+            "--actions-disabled-file", (Join-Path $LocalState "actions-disabled"),
+            "--enable-control",
+            "--robot-host", "127.0.0.1", "--robot-port", "8765"
         )
         RedirectStandardOutput = Join-Path $LocalState "telemetry.log"
         RedirectStandardError = Join-Path $LocalState "telemetry-error.log"
@@ -300,7 +304,9 @@ if ($Action -eq "status") {
         throw "Fake Wi-Fi gateway is not reachable on 127.0.0.1:8765"
     }
     Ensure-Ollama
-    Assert-OllamaModel
+    if (-not $NoVoice) {
+        Assert-OllamaModel
+    }
     $Health = Invoke-RestMethod -Uri "http://127.0.0.1:$TelemetryPort/api/health" -TimeoutSec 2
     if ($Health.status -ne "ok") { throw "Telemetry dashboard is not healthy" }
     Write-Host "Fake Wi-Fi, telemetry, and Ollama are reachable."
@@ -318,7 +324,9 @@ if ($LASTEXITCODE -ne 0) {
     throw "Remote Brain dependency synchronization failed"
 }
 Ensure-Ollama
-Assert-OllamaModel
+if (-not $NoVoice) {
+    Assert-OllamaModel
+}
 
 Write-Host "Starting the visual MicroDuck world, robot runtime, audio, and fake Wi-Fi..."
 Invoke-WslStack -StackAction start
@@ -338,12 +346,15 @@ Show-TelemetryEndpoint
 
 Write-Host "Visual simulator: ready"
 Write-Host "Fake Wi-Fi:       127.0.0.1:8765"
-Write-Host "Ollama model:     $OllamaModel"
+if (-not $NoVoice) {
+    Write-Host "Voice planner:    $OllamaModel"
+}
 
 $LocalState = Join-Path $Project ".local"
 New-Item -ItemType Directory -Force -Path $LocalState | Out-Null
 $ManualActive = Join-Path $LocalState "manual-active"
 $AutonomyActive = Join-Path $LocalState "autonomy-active"
+$ActionsDisabled = Join-Path $LocalState "actions-disabled"
 Remove-Item $ManualActive, $AutonomyActive -Force -ErrorAction SilentlyContinue
 $PanelPidFile = Join-Path $LocalState "panel.pid"
 Stop-ManagedPythonProcess -PidFile $PanelPidFile -CommandMarker "microduck_remote_brain.control_panel"
@@ -364,6 +375,7 @@ $GamepadStart = @{
         "--robot-port", "8765",
         "--pause-file", $ManualActive,
         "--pause-file", $AutonomyActive,
+        "--pause-file", $ActionsDisabled,
         "--status-file", (Join-Path $LocalState "gamepad-state.json")
     )
     RedirectStandardOutput = Join-Path $LocalState "gamepad.log"
@@ -385,6 +397,7 @@ if (-not $NoAutonomy) {
             "--pause-file", $ManualActive,
             "--activity-file", $AutonomyActive,
             "--status-file", (Join-Path $LocalState "autonomy-state.json"),
+            "--actions-disabled-file", $ActionsDisabled,
             "--pid-file", $AutonomyPidFile
         )
         RedirectStandardOutput = Join-Path $LocalState "autonomy.log"
@@ -416,6 +429,7 @@ $VoiceArguments = @(
     "--minimum-displacement", "0.02",
     "--gamepad-pause-file", $ManualActive,
     "--autonomy-active-file", $AutonomyActive,
+    "--actions-disabled-file", $ActionsDisabled,
     "--pid-file", (Join-Path $LocalState "voice.pid")
 )
 

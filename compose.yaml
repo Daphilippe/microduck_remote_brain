@@ -34,11 +34,22 @@ services:
       - 0.0.0.0
       - --listen-port
       - "8780"
+      - --autonomy-status-file
+      - /app/.local/autonomy-state.json
+      - --actions-disabled-file
+      - /app/.local/actions-disabled
+      - --enable-control
+      - --robot-host
+      - simulator
+      - --robot-port
+      - "8765"
     depends_on:
       simulator:
         condition: service_healthy
     ports:
       - "8780:8780"
+    volumes:
+      - brain-state:/app/.local
     restart: unless-stopped
 
   brain:
@@ -48,6 +59,10 @@ services:
       - microduck-autonomous
       - --config
       - /app/config/microduck.docker.toml
+      - --status-file
+      - /app/.local/autonomy-state.json
+      - --actions-disabled-file
+      - /app/.local/actions-disabled
     depends_on:
       simulator:
         condition: service_healthy

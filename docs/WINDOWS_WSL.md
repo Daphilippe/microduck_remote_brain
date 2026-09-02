@@ -92,15 +92,17 @@ To include autonomous inference, first pull the configured model and make Ollama
 containers:
 
 ```powershell
-ollama pull qwen3-vl:8b
+ollama pull qwen3:0.6b
+ollama pull qwen3.5:0.8b
 $env:OLLAMA_HOST = "0.0.0.0:11434"
 ollama serve
 .\scripts\standalone-stack.ps1 start -WithAutonomy
 ```
 
-Docker reaches the Windows service as `host.docker.internal`. Keep autonomous movement disabled in
-the Docker profile unless testing the protocol gate deliberately. Audit records are stored in the
-Compose volume `brain-state`.
+Docker reaches the Windows service as `host.docker.internal`. The standalone simulator profile
+enables bounded autonomous movement because its robot and body oracle are both synthetic. Audit
+records and the telemetry persona status are stored in the Compose volume `brain-state`. This
+validates the protocol path, not physical-robot movement safety.
 
 ## Start the full MuJoCo stack
 
@@ -131,9 +133,19 @@ Get-Content .\.local\autonomy.log -Wait
 Get-Content .\.local\autonomy-state.json
 ```
 
-The **Persona autonome** dashboard section shows whether MicroDuck is observing, deciding, acting,
+The **Autonomous persona** dashboard section shows whether MicroDuck is observing, deciding, acting,
 idle, paused or degraded, plus the last completed observation and action. The PID shown by
 `-Action status` comes from the real Python worker rather than the virtual-environment launcher.
+
+Use **Disable all actions** for the persistent safety stop. It immediately stops the robot and
+blocks autonomous, dashboard, and browser-gamepad commands. **Resume persona** does not override
+this latch; select **Enable all actions** explicitly. The `.local/actions-disabled` file survives a
+stack restart.
+
+The autonomous worker reads all 64 simulated ToF zones. Its lower-row continuity check latches a
+possible stair or drop-off for three clear observations, preventing a rotation from immediately
+forgetting a void. Keep physical `allow_movement = false`: hardware requires posture- and
+gravity-aware ToF reprojection rather than the simulator's calibrated raw-range rule.
 
 Stop every managed process with:
 

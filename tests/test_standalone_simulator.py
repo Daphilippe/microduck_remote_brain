@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import threading
+from io import BytesIO
+
+from PIL import Image
 
 from microduck_remote_brain.body_oracle import TcpBodyOracle
 from microduck_remote_brain.executor import PlanExecutor
@@ -58,6 +61,8 @@ def test_standalone_simulator_executes_plan_over_loopback() -> None:
 
             assert events[-1].event == "plan.completed"
             assert frame.startswith(b"\xff\xd8")
+            with Image.open(BytesIO(frame)) as image:
+                assert image.size == (640, 480)
         finally:
             robot_server.shutdown()
             oracle_server.shutdown()

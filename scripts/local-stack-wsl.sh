@@ -21,6 +21,8 @@ export DUCK_SIM_KEYFRAME=HOME
 export DUCK_SIM_SCENE="$SCENE"
 export DUCK_SIM_AUDIO_DEVICE=pulse
 export DUCK_SIM_STATE="$STATE"
+export DUCK_SIM_VIEWER_FPS=25
+export DUCK_SIM_CAMERA_FPS=15
 
 stop_gateway() {
     [[ -f "$GATEWAY_PID" ]] || return 0

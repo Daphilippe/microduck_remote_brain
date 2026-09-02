@@ -1,8 +1,43 @@
 from __future__ import annotations
 
+import re
+from pathlib import Path
+
 import pytest
 
 from microduck_remote_brain.brain_config import load_brain_config
+
+
+@pytest.mark.parametrize(
+    "profile",
+    ["microduck.sim.toml", "microduck.docker.toml", "microduck.physical.example.toml"],
+)
+def test_shipped_profiles_separate_compact_ollama_models(profile: str) -> None:
+    project = Path(__file__).parents[1]
+
+    config = load_brain_config(project / "config" / profile)
+
+    assert config.ollama_model == "qwen3:0.6b"
+    assert config.vision_model == "qwen3.5:0.8b"
+
+
+@pytest.mark.parametrize("profile", ["microduck.sim.toml", "microduck.docker.toml"])
+def test_autonomous_simulation_profiles_use_active_cadence(profile: str) -> None:
+    project = Path(__file__).parents[1]
+
+    config = load_brain_config(project / "config" / profile)
+
+    assert config.allow_movement is True
+    assert config.interval == 4.0
+
+
+def test_local_stack_uses_compact_voice_model_only_when_voice_is_enabled() -> None:
+    project = Path(__file__).parents[1]
+    script = (project / "scripts" / "local-stack.ps1").read_text(encoding="utf-8")
+
+    assert '[string]$OllamaModel = "qwen3:0.6b"' in script
+    assert "qwen3-vl:8b" not in script
+    assert len(re.findall(r"if \(-not \$NoVoice\) \{\s+Assert-OllamaModel\s+\}", script)) == 2
 
 
 def test_config_switches_from_simulator_tcp_to_physical_socket(tmp_path) -> None:

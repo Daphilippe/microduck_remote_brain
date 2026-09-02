@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 from typing import Any
 
 import pytest
@@ -124,10 +125,79 @@ def test_robotd_tcp_transport_and_sound(monkeypatch: pytest.MonkeyPatch) -> None
     ]
 
 
+def test_robotd_reports_mode_and_loaded_skill_capabilities(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = FakeSocket(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "accepted": True,
+                "sitstand": "sitstand.onnx",
+                "ground_pick": "roller_crouch.onnx",
+                "kick_left": None,
+                "kick_right": None,
+                "roulade": "roulade.onnx",
+            },
+        },
+        {"jsonrpc": "2.0", "id": 2, "result": {"mode": "roller"}},
+    )
+    monkeypatch.setattr(
+        "microduck_remote_brain.robotd.socket.create_connection",
+        lambda *args, **kwargs: connection,
+    )
+    client = RobotdClient(host="127.0.0.1", port=8765)
+
+    client.connect()
+    capabilities = client.capabilities()
+
+    assert capabilities.mode == "roller"
+    assert capabilities.skills == frozenset({"sit_toggle", "ground_pick", "roulade"})
+    assert [message["method"] for message in connection.sent] == [
+        "robot.subscribe",
+        "robot.mode",
+    ]
+
+
+def test_robotd_look_accepts_gaze_result_without_generic_accepted_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    connection = FakeSocket(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "head": {
+                    "neck_pitch": 0.0,
+                    "head_pitch": 0.1,
+                    "head_yaw": 0.2,
+                    "head_roll": 0.0,
+                },
+                "clamped": False,
+            },
+        },
+    )
+    monkeypatch.setattr(
+        "microduck_remote_brain.robotd.socket.create_connection",
+        lambda *args, **kwargs: connection,
+    )
+    client = RobotdClient(host="127.0.0.1", port=8765)
+
+    client.connect()
+    client.look(0.5, 0.3, 0.1)
+
+    assert connection.sent[0]["method"] == "robot.look"
+
+
 def test_body_oracle_protocol_1_hello_and_read(monkeypatch: pytest.MonkeyPatch) -> None:
     connection = FakeSocket(
         {"protocol": 1},
-        {"trunk": [1.25, -0.5, 0.116], "sim_time": 4.0},
+        {
+            "trunk": [1.25, -0.5, 0.116],
+            "sim_time": 4.0,
+            "imu": {"quat": [0.7071068, 0.0, 0.0, 0.7071068]},
+        },
     )
     monkeypatch.setattr(
         "microduck_remote_brain.body_oracle.socket.create_connection",
@@ -143,3 +213,4 @@ def test_body_oracle_protocol_1_hello_and_read(monkeypatch: pytest.MonkeyPatch) 
         {"op": "read"},
     ]
     assert (snapshot.trunk_x, snapshot.trunk_y, snapshot.sim_time) == (1.25, -0.5, 4.0)
+    assert snapshot.yaw == pytest.approx(math.pi / 2)

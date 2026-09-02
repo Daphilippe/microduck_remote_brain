@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from microduck_remote_brain.perception import SimulatorPerception
+from microduck_remote_brain.perception import DropHazardMemory, SimulatorPerception
 
 
 class FakeConnection:
@@ -64,3 +64,48 @@ def test_simulator_perception_rejects_invalid_camera_payload(
 
     with pytest.raises(RuntimeError, match="base64"):
         SimulatorPerception("127.0.0.1", 7801).capture()
+
+
+def test_simulator_perception_summarizes_tof_clearance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    distances = []
+    for _row in range(8):
+        distances.extend([900, 900, 900, 240, 240, 500, 500, 500])
+    connection = FakeConnection([{"protocol": 1}, {"distance_mm": distances}])
+    monkeypatch.setattr(
+        "microduck_remote_brain.perception.socket.create_connection",
+        lambda *_args: connection,
+    )
+
+    depth = SimulatorPerception("127.0.0.1", 7801).capture_depth()
+
+    assert depth.left_clearance_mm == 900
+    assert depth.center_clearance_mm == 240
+    assert depth.right_clearance_mm == 500
+    assert len(depth.distance_mm) == 64
+    assert connection.sent[-1] == {"op": "tof"}
+
+
+def test_tof_detects_and_remembers_lower_field_drop_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    distances = [450] * 64
+    for row in (6, 7):
+        for column in (3, 4):
+            distances[row * 8 + column] = 1200
+    connection = FakeConnection([{"protocol": 1}, {"distance_mm": distances}])
+    monkeypatch.setattr(
+        "microduck_remote_brain.perception.socket.create_connection",
+        lambda *_args: connection,
+    )
+    memory = DropHazardMemory(clear_frames_required=3)
+
+    detected = memory.update(SimulatorPerception("127.0.0.1", 7801).capture_depth())
+    clear = type(detected)((), 450, 450, 450)
+
+    assert detected.drop_hazard_sectors == ("center",)
+    assert detected.drop_hazard_remembered is True
+    assert memory.update(clear).drop_hazard_remembered is True
+    assert memory.update(clear).drop_hazard_remembered is True
+    assert memory.update(clear).drop_hazard_remembered is False

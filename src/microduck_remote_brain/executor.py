@@ -47,6 +47,7 @@ class BodySnapshot:
     trunk_x: float
     trunk_y: float
     sim_time: float
+    yaw: float = 0.0
 
 
 class RobotClient(Protocol):
@@ -54,13 +55,17 @@ class RobotClient(Protocol):
 
     def close(self) -> None: ...
 
-    def subscribe(self, hz: int) -> None: ...
+    def subscribe(self, hz: int) -> object: ...
 
     def move(self, linear_velocity: float, angular_velocity: float) -> None: ...
 
     def stop(self) -> None: ...
 
     def sound(self, tag: str) -> None: ...
+
+    def skill(self, name: str) -> None: ...
+
+    def look(self, x: float, y: float, z: float, neck_pitch: float = 0.0) -> None: ...
 
     def next_state(self, after_revision: int, timeout: float) -> RobotState: ...
 
@@ -155,6 +160,15 @@ class PlanExecutor:
                     self._execute_walk(step)
                 elif step.tool == "stop":
                     self._stop_and_verify()
+                elif step.tool == "skill":
+                    self._robot.skill(str(step.arguments["name"]))
+                elif step.tool == "look":
+                    self._robot.look(
+                        float(step.arguments["x"]),
+                        float(step.arguments["y"]),
+                        float(step.arguments["z"]),
+                        float(step.arguments["neck_pitch"]),
+                    )
                 else:
                     self._robot.sound(str(step.arguments["tag"]))
                 record("step.completed", step.id)
@@ -178,7 +192,7 @@ class PlanExecutor:
         angular = float(step.arguments["angular_velocity"])
         duration = float(step.arguments["duration"])
         oracle = self._oracle
-        before = oracle.read() if oracle is not None else None
+        before = oracle.read() if oracle is not None and abs(linear) > 1e-3 else None
         primary_error: Exception | None = None
         try:
             deadline = self._clock() + duration

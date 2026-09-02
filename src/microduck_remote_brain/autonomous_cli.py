@@ -8,14 +8,20 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from .audit import JsonlAuditLog
-from .autonomy import OllamaAutonomousPlanner
+from .autonomy import ActuatorResolver, OllamaPersonaModel
 from .body_oracle import TcpBodyOracle
 from .brain_config import BrainConfig, load_brain_config
 from .executor import ExecutionError, PlanExecutor
 from .model import Plan
-from .perception import CameraPerception, ImagePerception, PerceptionProvider, SimulatorPerception
+from .perception import (
+    CameraPerception,
+    DropHazardMemory,
+    ImagePerception,
+    PerceptionProvider,
+    SimulatorPerception,
+)
 from .prerequisites import PrerequisiteError, verify_local_foundations
-from .robotd import RobotdClient
+from .robotd import RobotCapabilities, RobotdClient
 from .vision import OllamaVision
 
 
@@ -24,12 +30,16 @@ class CycleContext:
     config: BrainConfig
     perception: PerceptionProvider
     vision: OllamaVision
-    planner: OllamaAutonomousPlanner
+    persona: OllamaPersonaModel
+    actuators: ActuatorResolver
     audit: JsonlAuditLog
     pause_file: Path | None
     activity_file: Path | None
     status_file: Path | None
+    actions_disabled_file: Path | None
+    drop_memory: DropHazardMemory
     recent_behaviors: list[str]
+    last_behavior: dict[str, object]
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -40,6 +50,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--pause-file", type=Path)
     parser.add_argument("--activity-file", type=Path)
     parser.add_argument("--status-file", type=Path)
+    parser.add_argument("--actions-disabled-file", type=Path)
     parser.add_argument("--pid-file", type=Path)
     return parser
 
@@ -63,12 +74,16 @@ def main(argv: list[str] | None = None) -> int:
         voice_status = "with optional Whisper" if config.whisper_executable else "without Whisper"
         print(f"foundations ready: Ollama is available {voice_status}")
         vision = OllamaVision(config.vision_model, endpoint=config.ollama_endpoint)
-        planner = OllamaAutonomousPlanner(
+        persona = OllamaPersonaModel(
             config.ollama_model,
             persona_prompt=config.persona_prompt,
             sound_actions=config.sound_actions,
             allow_movement=config.allow_movement,
             endpoint=config.ollama_endpoint,
+        )
+        actuators = ActuatorResolver(
+            sound_actions=config.sound_actions,
+            allow_movement=config.allow_movement,
         )
         perception = _perception_provider(config)
         audit = JsonlAuditLog(config.audit_path)
@@ -76,19 +91,43 @@ def main(argv: list[str] | None = None) -> int:
             config,
             perception,
             vision,
-            planner,
+            persona,
+            actuators,
             audit,
             args.pause_file,
             args.activity_file,
             args.status_file,
+            args.actions_disabled_file,
+            DropHazardMemory(),
             [],
+            {},
         )
-        _write_status(args.status_file, state="starting", message="Persona initialisé")
+        _write_status(args.status_file, state="starting", message="Persona initialized")
         cycles = 1 if args.once else args.max_cycles
         completed = 0
+        actions_were_disabled = False
         while cycles is None or completed < cycles:
+            actions_disabled = (
+                args.actions_disabled_file is not None
+                and args.actions_disabled_file.exists()
+            )
+            if actions_disabled:
+                if not actions_were_disabled:
+                    _stop_robot(config)
+                    audit.write("actions.disabled")
+                actions_were_disabled = True
+                _write_status(
+                    args.status_file,
+                    state="actions_disabled",
+                    message="All robot actions are disabled by the safety latch",
+                )
+                time.sleep(0.1)
+                continue
+            if actions_were_disabled:
+                audit.write("actions.enabled")
+                actions_were_disabled = False
             if args.pause_file is not None and args.pause_file.exists():
-                _write_status(args.status_file, state="paused", message="Contrôle manuel actif")
+                _write_status(args.status_file, state="paused", message="Manual control active")
                 time.sleep(0.1)
                 continue
             try:
@@ -132,32 +171,77 @@ def _perception_provider(config: BrainConfig) -> PerceptionProvider:
 
 
 def _run_cycle(context: CycleContext) -> bool:
-    _write_status(context.status_file, state="observing", message="Observation de la scène")
+    if context.recent_behaviors and context.recent_behaviors[-1] == "sit_toggle":
+        return _run_stand_recovery(context)
+    _write_status(
+        context.status_file,
+        state="observing",
+        message="Interpreting scene",
+        **context.last_behavior,
+    )
     image = context.perception.capture()
-    observation = context.vision.describe(image)
-    print(f"observation: {observation}")
+    depth = (
+        context.drop_memory.update(context.perception.capture_depth())
+        if isinstance(context.perception, SimulatorPerception)
+        else None
+    )
+    capabilities = _robot_capabilities(context.config)
+    scene = context.vision.interpret(image)
+    scene_value = scene.to_dict()
+    depth_value = depth.to_dict() if depth is not None else None
+    capabilities_value = capabilities.to_dict()
+    print(f"scene: {json.dumps(scene_value, ensure_ascii=False, allow_nan=False)}")
     context.audit.write(
-        "perception.completed", observation=observation, image_bytes=len(image)
+        "perception.completed",
+        scene=scene_value,
+        depth=depth_value,
+        capabilities=capabilities_value,
+        observation=scene.summary,
+        image_bytes=len(image),
     )
     _write_status(
         context.status_file,
         state="deciding",
-        message="Choix d'une action",
-        observation=observation,
+        message="Selecting persona intent",
+        scene=scene_value,
+        depth=depth_value,
+        capabilities=capabilities_value,
+        observation=scene.summary,
     )
-    plan = context.planner.plan(
-        observation,
+    intent = context.persona.decide(
+        scene,
+        depth=depth,
+        capabilities=capabilities,
         recent_behaviors=tuple(context.recent_behaviors),
     )
+    intent_value = asdict(intent)
+    context.audit.write("persona.decided", intent=intent_value)
+    plan = context.actuators.resolve(intent, scene, depth, capabilities)
     plan_value = asdict(plan)
     print(json.dumps(plan_value, indent=2, ensure_ascii=False, allow_nan=False))
     context.audit.write("plan.created", plan=plan_value)
     actions = [step.tool for step in plan.steps]
+    behavior_status: dict[str, object] = {
+        "scene": scene_value,
+        "depth": depth_value,
+        "capabilities": capabilities_value,
+        "observation": scene.summary,
+        "intent": intent_value,
+        "voice_style": intent.voice_style,
+        "utterance": intent.utterance,
+        "actions": actions,
+    }
     _write_status(
         context.status_file,
         state="acting",
-        message="Exécution du comportement",
-        observation=observation,
+        message="Executing resolved behavior",
+        scene=scene_value,
+        depth=depth_value,
+        capabilities=capabilities_value,
+        observation=scene.summary,
+        intent=intent_value,
+        voice_style=intent.voice_style,
+        utterance=intent.utterance,
         actions=actions,
     )
     if not _execute_plan(
@@ -168,17 +252,64 @@ def _run_cycle(context: CycleContext) -> bool:
         context.activity_file,
     ):
         return False
-    behavior = "+".join(
-        str(step.arguments.get("tag", step.tool)) for step in plan.steps
-    )
-    context.recent_behaviors.append(behavior)
-    del context.recent_behaviors[:-3]
+    context.recent_behaviors.append(intent.action)
+    del context.recent_behaviors[:-6]
+    context.last_behavior.clear()
+    context.last_behavior.update(behavior_status)
     _write_status(
         context.status_file,
         state="idle",
-        message="Comportement terminé",
-        observation=observation,
-        actions=actions,
+        message="Behavior completed",
+        **behavior_status,
+    )
+    return True
+
+
+def _run_stand_recovery(context: CycleContext) -> bool:
+    plan = Plan.from_dict(
+        {
+            "schema_version": 1,
+            "plan_id": "autonomous-stand-recovery",
+            "goal": "Return to standing after autonomous sitting",
+            "steps": [
+                {"id": "stand-up", "tool": "skill", "arguments": {"name": "sit_toggle"}},
+                {"id": "feedback", "tool": "sound", "arguments": {"tag": "chirp"}},
+            ],
+            "requires_confirmation": False,
+        }
+    )
+    plan_value = asdict(plan)
+    context.audit.write("plan.created", plan=plan_value, deterministic_recovery=True)
+    _write_status(
+        context.status_file,
+        state="acting",
+        message="Returning to standing before the next observation",
+        intent={"action": "stand_up"},
+        actions=["skill", "sound"],
+    )
+    if not _execute_plan(
+        context.config,
+        plan,
+        context.audit,
+        context.pause_file,
+        context.activity_file,
+    ):
+        return False
+    context.recent_behaviors.append("stand_up")
+    del context.recent_behaviors[:-6]
+    context.last_behavior.clear()
+    context.last_behavior.update(
+        {
+            "intent": {"action": "stand_up"},
+            "actions": ["skill", "sound"],
+            "utterance": "",
+        }
+    )
+    _write_status(
+        context.status_file,
+        state="idle",
+        message="Stand recovery completed",
+        **context.last_behavior,
     )
     return True
 
@@ -205,6 +336,7 @@ def _execute_plan(
                 else None
             ),
             minimum_displacement=(config.minimum_displacement if config.oracle_enabled else None),
+            state_timeout=3.0,
             event_sink=audit.lifecycle,
         ).execute(plan)
         return True
@@ -217,6 +349,24 @@ def _robot_client(config: BrainConfig) -> RobotdClient:
     if config.robot_transport == "unix":
         return RobotdClient(config.robot_socket)
     return RobotdClient(host=config.robot_host, port=config.robot_port)
+
+
+def _robot_capabilities(config: BrainConfig) -> RobotCapabilities:
+    robot = _robot_client(config)
+    robot.connect()
+    try:
+        return robot.capabilities()
+    finally:
+        robot.close()
+
+
+def _stop_robot(config: BrainConfig) -> None:
+    robot = _robot_client(config)
+    robot.connect()
+    try:
+        robot.stop()
+    finally:
+        robot.close()
 
 
 def _write_status(path: Path | None, *, state: str, message: str, **facts: object) -> None:
@@ -232,7 +382,14 @@ def _write_status(path: Path | None, *, state: str, message: str, **facts: objec
         ),
         encoding="utf-8",
     )
-    temporary.replace(path)
+    for attempt in range(5):
+        try:
+            temporary.replace(path)
+            return
+        except PermissionError:
+            if attempt == 4:
+                raise
+            time.sleep(0.01)
 
 
 if __name__ == "__main__":

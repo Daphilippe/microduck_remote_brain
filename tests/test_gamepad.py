@@ -119,3 +119,18 @@ def test_expected_button_edges_dispatch_skills_and_modes() -> None:
         "sit_toggle",
     }
     assert controller.mode is Mode.HEAD
+
+
+def test_canonical_held_buttons_chain_roll_switch_mode_and_shutdown(monkeypatch) -> None:
+    robot = FakeRobot()
+    controller = GamepadController(robot)  # type: ignore[arg-type]
+    now = 10.0
+    monkeypatch.setattr("microduck_remote_brain.gamepad_cli.time.monotonic", lambda: now)
+
+    controller.update(state(buttons=Button.X | Button.DPAD_UP | Button.BACK))
+    now += 3.1
+    controller.update(state(buttons=Button.X | Button.DPAD_UP | Button.BACK))
+
+    assert ("skill", "roulade", {"notify": True}) in robot.calls
+    assert ("set_mode", "roller", {}) in robot.calls
+    assert ("shutdown", {}) in robot.calls

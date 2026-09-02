@@ -29,6 +29,8 @@ needed.
 For the complete Windows, WSL2 and Docker workflow, read
 [docs/WINDOWS_WSL.md](docs/WINDOWS_WSL.md). The provider boundaries and deferred production work are
 documented in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/TODO.md](docs/TODO.md).
+The verified separation between theremin interaction, laser targets, and deterministic point-to-point
+control is documented in [docs/NAVIGATION.md](docs/NAVIGATION.md).
 
 ## Standalone contract simulation
 
@@ -102,7 +104,8 @@ temperatures, plus the simulated VL53L5CX 8x8 ToF frame. Both PCs must be on the
 same private network. The native MuJoCo window remains local to the
 Windows/WSLg session; it is not a network video stream.
 
-The MuJoCo model's `head_camera` is rendered at 640x480 and 10 fps. The autonomous simulation
+The MuJoCo viewer is synchronized at 50 Hz. Its `head_camera` is rendered at 640x480 and 30 fps,
+and the telemetry MJPEG stream is scheduled at 30 Hz. The autonomous simulation
 profile and dashboard both consume this camera; the PC webcam is not used by that profile. The
 dashboard exposes it as MJPEG at `/api/camera/stream` and as a single JPEG at
 `/api/camera.jpg`. Rendering uses a private MuJoCo state copy so camera work
@@ -123,9 +126,49 @@ The controller mapping matches `padd`:
 | X | Roulade; hold to chain |
 | LB / RB | Left / right kick |
 | D-pad down | Sit / stand |
+| D-pad up, hold 3 seconds | Switch walk / roller mode |
 | RT | Open mouth and chirp on press |
 | LT | Open mouth and hold the wheee sound |
-| Right stick press | Push-to-talk start/stop |
+| Back / Select, hold 2 seconds | Sit and shut down |
+| Right stick press | Push-to-talk start/stop, added by the remote-brain stack |
+| D-pad left / right | Unassigned |
+| Left stick press | Unassigned |
+
+The LAN telemetry page is also a simulation command center. It exposes bounded drive, gaze, head
+and body control, every installed skill and sound, walk/roller mode, theremin and chorale. Manual
+control explicitly pauses the persona; **Resume persona** returns ownership. This HTTP control
+surface is enabled only by the local simulation launcher and has no authentication, so it must not
+be exposed outside a trusted development LAN.
+
+**Disable all actions** is a separate persistent safety latch. It immediately sends `robot.stop`,
+pauses autonomous actions, and rejects every dashboard command except another stop. **Enable all
+actions** must be selected explicitly to clear the latch. Restarting the local stack does not clear
+it.
+
+Autonomy combines the semantic camera scene with the simulated 8x8 ToF frame. The two lowest ToF
+rows are treated as the floor-continuity band for the approximately 20 cm-high robot. A majority of
+missing returns or ranges beyond 700 mm in a left, center, or right sector marks a possible stair or
+drop-off. That hazard remains latched until three consecutive fully safe observations, preventing a
+turn from immediately erasing knowledge of a void that moved out of view. While latched, forward
+motion and object skills are forbidden; MicroDuck may only inspect a safe side or stop.
+
+Outside a remembered drop hazard, MicroDuck behaves as an active domestic animal. A three-behavior
+activity window requires at least two physical choices, selected from forward walking, curved
+wandering, inspection turns, and small-object interactions. Ordinary visual uncertainty is tolerated
+when current ToF clearance supports movement. The resolver uses only relative scene and depth facts,
+so the same policy applies to other simulator scenes without a map-specific route.
+
+Robot mode and loaded skill policies are refreshed every cycle. Walk mode may occasionally add
+roulade and sit/stand; an autonomous sit is paired with a deterministic stand before the next camera
+capture. Kicks are offered only for a nearby detected ball with the matching policy.
+Roller mode removes leg-dependent kicks, roulade, and sit/stand while retaining mode-specific
+locomotion and roller crouch when advertised. Autonomy never selects roller mode without an external
+capability proving that rollers are installed. A bounded three-note sound phrase provides solo
+singing; native chorale remains an explicit multi-duck opt-in.
+
+When visual context is insufficient, MicroDuck stops its body and scans only its head left, right,
+then center through `robot.look`. The acquisition sequence remains subordinate to remembered-drop
+safety and the global action-disable latch.
 
 The gamepad client starts with the local stack and waits safely if the pad is
 asleep. A disconnect sends `robot.stop`; `robotd`'s deadman remains the final
@@ -155,7 +198,7 @@ The launcher does not require activating the Python virtual environment
 manually. Use `-TelemetryPort` when port `8780` is already occupied.
 `-NoVoice` keeps the autonomous personality running; use `-NoAutonomy` only when a fully manual
 simulation is required. Voice, autonomous actions and gamepad commands use separate activity files
-so they do not command the robot simultaneously. The telemetry dashboard's **Persona autonome**
+so they do not command the robot simultaneously. The telemetry dashboard's **Autonomous persona**
 section shows each live observe/decide/act cycle and the last completed behavior.
 
 The TCP gateway is intentionally simulation-only and has no authentication. It

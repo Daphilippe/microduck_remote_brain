@@ -57,6 +57,8 @@ class TcpBodyOracle:
         trunk_x = trunk[0]
         trunk_y = trunk[1]
         sim_time = response.get("sim_time")
+        imu = response.get("imu")
+        quaternion = imu.get("quat") if isinstance(imu, dict) else None
         if (
             not _finite_number(trunk_x)
             or not _finite_number(trunk_y)
@@ -66,7 +68,8 @@ class TcpBodyOracle:
                 ExecutionReason.ORACLE_PROTOCOL,
                 "BodyOracle trunk x/y and sim_time must be finite numbers",
             )
-        return BodySnapshot(float(trunk_x), float(trunk_y), float(sim_time))
+        yaw = _yaw_from_quaternion(quaternion)
+        return BodySnapshot(float(trunk_x), float(trunk_y), float(sim_time), yaw)
 
     def _send(self, message: dict[str, Any]) -> None:
         if self._socket is None:
@@ -100,3 +103,12 @@ class TcpBodyOracle:
 
 def _finite_number(value: Any) -> TypeGuard[int | float]:
     return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _yaw_from_quaternion(value: object) -> float:
+    if not isinstance(value, list) or len(value) != 4 or not all(
+        _finite_number(component) for component in value
+    ):
+        return 0.0
+    w, x, y, z = (float(component) for component in value)
+    return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))

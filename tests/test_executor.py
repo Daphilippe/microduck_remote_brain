@@ -67,6 +67,12 @@ class FakeRobot:
     def sound(self, tag: str) -> None:
         self.calls.append(("sound", tag))
 
+    def skill(self, name: str) -> None:
+        self.calls.append(("skill", name))
+
+    def look(self, x: float, y: float, z: float, neck_pitch: float = 0.0) -> None:
+        self.calls.append(("look", x, y, z, neck_pitch))
+
     def next_state(self, after_revision: int, timeout: float) -> RobotState:
         self.calls.append(("state", after_revision, timeout))
         try:
@@ -196,6 +202,21 @@ def test_insufficient_displacement_fails_after_verified_stop() -> None:
     assert robot.calls[-2:] == [("state", 1, 1.0), "close"]
 
 
+def test_turn_in_place_uses_velocity_evidence_without_xy_displacement() -> None:
+    robot = FakeRobot([RobotState(1, 0.0, 0.4), RobotState(2, 0.0, 0.0)])
+    oracle = FakeOracle([])
+    turn = {
+        "id": "turn-1",
+        "tool": "walk",
+        "arguments": {"linear_velocity": 0.0, "angular_velocity": 0.4, "duration": 0.2},
+    }
+
+    events = execute(robot, plan_with(turn), oracle, minimum=0.02)
+
+    assert events[-1].event == "plan.completed"
+    assert oracle.calls == ["connect", "close"]
+
+
 def test_sound_is_dispatched_as_a_discrete_action() -> None:
     robot = FakeRobot([])
     plan = plan_with({"id": "sound-1", "tool": "sound", "arguments": {"tag": "chirp"}})
@@ -203,3 +224,31 @@ def test_sound_is_dispatched_as_a_discrete_action() -> None:
     execute(robot, plan)
 
     assert ("sound", "chirp") in robot.calls
+
+
+def test_skill_is_dispatched_as_a_discrete_action() -> None:
+    robot = FakeRobot([])
+    plan = plan_with(
+        {"id": "pick-1", "tool": "skill", "arguments": {"name": "ground_pick"}}
+    )
+
+    execute(robot, plan)
+
+    assert ("skill", "ground_pick") in robot.calls
+
+
+def test_head_scan_dispatches_look_without_movement() -> None:
+    robot = FakeRobot([RobotState(1, 0.0, 0.0)])
+    plan = plan_with(
+        {"id": "stop-1", "tool": "stop", "arguments": {}},
+        {
+            "id": "look-1",
+            "tool": "look",
+            "arguments": {"x": 0.5, "y": 0.35, "z": 0.0, "neck_pitch": 0.0},
+        },
+    )
+
+    execute(robot, plan)
+
+    assert ("look", 0.5, 0.35, 0.0, 0.0) in robot.calls
+    assert not any(isinstance(call, tuple) and call[0] == "move" for call in robot.calls)

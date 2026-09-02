@@ -7,6 +7,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 $Project = Split-Path -Parent $PSScriptRoot
+$LocalState = Join-Path $Project ".local"
+New-Item -ItemType Directory -Force -Path $LocalState | Out-Null
 if ([string]::IsNullOrWhiteSpace($Config)) {
     $Config = Join-Path $Project "config\microduck.sim.toml"
 }
@@ -26,7 +28,8 @@ if ($LASTEXITCODE -ne 0) {
 $Arguments = @(
     "run", "--project", $Project,
     "microduck-autonomous",
-    "--config", $Config
+    "--config", $Config,
+    "--actions-disabled-file", (Join-Path $LocalState "actions-disabled")
 )
 if ($Once) {
     $Arguments += "--once"

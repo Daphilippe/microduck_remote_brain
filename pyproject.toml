@@ -8,7 +8,9 @@ version = "0.1.0"
 description = "Hardware-agnostic planning and verification gates for MicroDuck"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+	"pillow>=11,<13",
+]
 
 [project.optional-dependencies]
 voice = [
@@ -38,7 +40,7 @@ microduck-standalone-sim = "microduck_remote_brain.standalone_simulator:main"
 testpaths = ["tests"]
 
 [tool.pyright]
-include = ["src", "tests"]
+include = ["src", "tests", "scripts"]
 extraPaths = ["src"]
 
 [tool.ruff]

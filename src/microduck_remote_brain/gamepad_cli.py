@@ -19,6 +19,8 @@ BODY_MAX_Z_UP = 0.010
 BODY_MAX_Z_DOWN = 0.025
 BODY_MAX_ANGLE = 0.2618
 TRIGGER_THRESHOLD = 0.3
+SHUTDOWN_HOLD = 2.0
+MODE_HOLD = 3.0
 
 
 class Mode(StrEnum):
@@ -45,6 +47,11 @@ class GamepadController:
         self.robot = robot
         self.mode = Mode.DRIVE
         self.drive_active = False
+        self.roller_mode = False
+        self.select_held_since: float | None = None
+        self.dpad_up_held_since: float | None = None
+        self.shutdown_sent = False
+        self.mode_switch_sent = False
         self.last_twist = (0.0, 0.0, 0.0)
         self.previous = GamepadState(Button(0), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
 
@@ -55,6 +62,7 @@ class GamepadController:
             self.previous = state
 
     def update(self, state: GamepadState) -> None:
+        now = time.monotonic()
         pressed = state.buttons & ~self.previous.buttons
         if pressed & Button.START:
             self.robot.toggle_enable()
@@ -74,6 +82,29 @@ class GamepadController:
         ):
             if pressed & button:
                 self.robot.skill(skill)
+        if state.buttons & Button.X and not pressed & Button.X:
+            self.robot.skill("roulade", notify=True)
+
+        if state.buttons & Button.BACK:
+            if self.select_held_since is None:
+                self.select_held_since = now
+            elif now - self.select_held_since >= SHUTDOWN_HOLD and not self.shutdown_sent:
+                self.shutdown_sent = True
+                self.robot.shutdown()
+        else:
+            self.select_held_since = None
+            self.shutdown_sent = False
+
+        if state.buttons & Button.DPAD_UP:
+            if self.dpad_up_held_since is None:
+                self.dpad_up_held_since = now
+            elif now - self.dpad_up_held_since >= MODE_HOLD and not self.mode_switch_sent:
+                self.mode_switch_sent = True
+                self.roller_mode = not self.roller_mode
+                self.robot.set_mode("roller" if self.roller_mode else "walk")
+        else:
+            self.dpad_up_held_since = None
+            self.mode_switch_sent = False
 
         left_x = _deadzone(state.left_x)
         left_y = _deadzone(state.left_y)

@@ -3,9 +3,13 @@ from __future__ import annotations
 import json
 import time
 
+import pytest
+
 from microduck_remote_brain.telemetry_server import (
     DASHBOARD,
     SimulatorCache,
+    actions_are_enabled,
+    dispatch_control,
     read_autonomy_status,
 )
 
@@ -13,7 +17,16 @@ from microduck_remote_brain.telemetry_server import (
 def test_dashboard_rejects_unsuccessful_http_responses() -> None:
     assert "response.ok" in DASHBOARD
     assert "HTTP ${response.status}" in DASHBOARD
-    assert "Persona autonome" in DASHBOARD
+    assert "Scene semantics" in DASHBOARD
+    assert "Autonomous persona" in DASHBOARD
+    assert "Disable all actions" in DASHBOARD
+    assert "/api/actions/disable" in DASHBOARD
+    assert "/api/actions/enable" in DASHBOARD
+    assert "ToF clearance" in DASHBOARD
+    assert "Drop memory" in DASHBOARD
+    assert "control.disabled=!actionsEnabled" in DASHBOARD
+    assert "setInterval(refresh,33)" in DASHBOARD
+    assert "TELEMETRY_HZ = 30.0" not in DASHBOARD
 
 
 def test_simulator_cache_fans_out_one_read(monkeypatch) -> None:
@@ -40,13 +53,23 @@ def test_missing_autonomy_status_is_stopped(tmp_path) -> None:
     assert status["state"] == "stopped"
 
 
+def test_persistent_action_safety_file_controls_enabled_state(tmp_path) -> None:
+    path = tmp_path / "actions-disabled"
+
+    assert actions_are_enabled(path)
+
+    path.touch()
+
+    assert not actions_are_enabled(path)
+
+
 def test_autonomy_status_reports_fresh_action(tmp_path) -> None:
     path = tmp_path / "autonomy.json"
     path.write_text(
         json.dumps(
             {
                 "state": "idle",
-                "message": "Comportement terminé",
+                "message": "Behavior completed",
                 "updated_at": time.time(),
                 "actions": ["stop", "sound"],
                 "observation": "clear floor",
@@ -74,3 +97,43 @@ def test_autonomy_status_marks_old_worker_state_stale(tmp_path) -> None:
     status = read_autonomy_status(path)
 
     assert status["state"] == "stale"
+
+
+def test_control_dispatches_bounded_movement_and_chained_skill(monkeypatch) -> None:
+    calls: list[tuple[object, ...]] = []
+
+    class FakeRobot:
+        def __init__(self, *, host: str, port: int) -> None:
+            calls.append(("created", host, port))
+
+        def __getattr__(self, name: str):
+            return lambda *args, **kwargs: calls.append((name, *args, kwargs))
+
+    monkeypatch.setattr("microduck_remote_brain.telemetry_server.RobotdClient", FakeRobot)
+
+    dispatch_control("127.0.0.1", 8765, {"action": "move", "vx": 0.2, "vyaw": -0.5})
+    dispatch_control(
+        "127.0.0.1",
+        8765,
+        {"action": "skill", "skill": "roulade", "notify": True},
+    )
+
+    assert ("move_twist", 0.2, 0.0, -0.5, {}) in calls
+    assert ("skill", "roulade", {"notify": True}) in calls
+
+
+def test_control_rejects_out_of_range_movement(monkeypatch) -> None:
+    class FakeRobot:
+        def __init__(self, *, host: str, port: int) -> None:
+            pass
+
+        def connect(self) -> None:
+            pass
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr("microduck_remote_brain.telemetry_server.RobotdClient", FakeRobot)
+
+    with pytest.raises(ValueError, match="outside its allowed range"):
+        dispatch_control("127.0.0.1", 8765, {"action": "move", "vx": 0.31})

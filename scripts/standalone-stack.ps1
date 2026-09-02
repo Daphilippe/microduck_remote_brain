@@ -9,7 +9,7 @@ $ErrorActionPreference = "Stop"
 $Project = Split-Path -Parent $PSScriptRoot
 $Compose = Join-Path $Project "compose.yaml"
 
-& docker info *> $null
+& cmd.exe /d /c "docker info >nul 2>nul"
 if ($LASTEXITCODE -ne 0) {
     throw "Docker Desktop is not running. Start it, then retry this command."
 }

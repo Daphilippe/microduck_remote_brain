@@ -88,6 +88,10 @@ Run it only after those projects and environments are installed:
 .\scripts\local-stack.ps1
 ```
 
+The command center writes the persistent safety latch to `.local/actions-disabled`. This local file
+is intentionally preserved by launcher restarts. Use **Enable all actions** in the dashboard to
+clear it explicitly after checking the scene and robot state.
+
 The fake Wi-Fi gateway binds to localhost and has no authentication. It is
 simulation-only and must not be exposed to an untrusted network.
 

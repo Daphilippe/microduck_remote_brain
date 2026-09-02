@@ -17,6 +17,8 @@ explicitly deferred and is required before exposing a robot or telemetry to an u
 - implement a deterministic hardware safety provider using ToF/proximity, fall state, battery,
   command freshness and camera-frame freshness;
 - require that provider before physical `allow_movement` can be enabled;
+- feed head joints, trunk posture, and gravity through the Rust ToF reprojector for hardware stair
+    and drop-off classification; the simulator already has a conservative lower-row memory latch;
 - add an independently tested emergency-stop path and reconnect policy;
 - negotiate robot capabilities and protocol versions at connection time.
 
@@ -38,5 +40,13 @@ than copying development defaults.
 
 - publish versioned container images and a signed release process;
 - add restart/upgrade/rollback tests and persistent audit retention policy;
+
+## Deterministic navigation
+
+- implement the pure relative-target control law described in `NAVIGATION.md`;
+- add simulator arrival, obstacle, drop-memory, stall, timeout, and global-OFF integration tests;
+- expose bounded relative targets to the persona and command center;
+- add an optional laser-dot target provider only after bearing/confidence validation;
+- calibrate walk and roller stopping/progress thresholds separately.
 - add full MuJoCo integration tests to CI on a compatible Linux runner;
 - document backup and privacy handling for images, audio, transcripts and personality memory.
