@@ -29,7 +29,7 @@ def test_autonomous_simulation_profiles_use_active_cadence(profile: str) -> None
 
     assert config.allow_movement is True
     assert config.interval == 4.0
-    assert config.mapping_enabled is True
+    assert config.mapping_enabled is False
     assert config.mapping_keyframe_directory is not None
 
 

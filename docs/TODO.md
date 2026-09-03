@@ -43,6 +43,8 @@ than copying development defaults.
 
 ## Deterministic navigation
 
+- re-enable the experimental mapping pipeline only after localization and occupancy-map quality are
+    reliable enough for autonomous use;
 - implement the pure relative-target control law described in `NAVIGATION.md`;
 - add simulator arrival, obstacle, drop-memory, stall, timeout, and global-OFF integration tests;
 - expose bounded relative targets to the persona and command center;

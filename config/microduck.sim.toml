@@ -38,7 +38,8 @@ allow_movement = true
 interval = 4.0
 
 [mapping]
-enabled = true
+# Experimental mapping is disabled until localization and map quality are reliable enough.
+enabled = false
 path = "../.local/maps/occupancy-map.json"
 keyframe_directory = "../.local/maps/keyframes"
 resolution_m = 0.05
