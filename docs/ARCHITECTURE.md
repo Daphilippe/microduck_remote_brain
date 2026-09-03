@@ -87,5 +87,6 @@ Robotd's own deadman remains the final movement fallback.
 The current theremin is a hand-distance musical mode, not a laser or waypoint follower. Future A-to-B
 movement uses the architecture in [NAVIGATION.md](NAVIGATION.md): an LLM, UI, or detector supplies a
 bounded relative target, while a deterministic controller closes the loop on body X/Y/yaw, ToF,
-drop memory, progress, and timeout. `BodySnapshot` now preserves simulator yaw as the first required
-odometry contract. The waypoint executor is not yet marked complete.
+drop memory, progress, and timeout. The implemented mapping path reads `odom.position`, `odom.yaw`,
+timestamps, and available inertial evidence from `robot.state` through `RobotOdometryProvider`; it
+does not use simulator-truth trunk coordinates. The waypoint executor is not yet marked complete.

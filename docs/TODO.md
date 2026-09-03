@@ -46,7 +46,10 @@ than copying development defaults.
 - implement the pure relative-target control law described in `NAVIGATION.md`;
 - add simulator arrival, obstacle, drop-memory, stall, timeout, and global-OFF integration tests;
 - expose bounded relative targets to the persona and command center;
+- consume the existing occupancy grid in a deterministic global planner;
+- add a physical 2.5D elevation/traversability layer with calibrated sensor reprojection;
+- add loop closure and map-frame correction before relying on long-lived maps;
 - add an optional laser-dot target provider only after bearing/confidence validation;
-- calibrate walk and roller stopping/progress thresholds separately.
+- calibrate walk and roller stopping/progress thresholds separately;
 - add full MuJoCo integration tests to CI on a compatible Linux runner;
 - document backup and privacy handling for images, audio, transcripts and personality memory.

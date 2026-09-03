@@ -33,6 +33,14 @@ enabled = false
 allow_movement = false
 interval = 15.0
 
+# Enable this only after the physical transport supplies synchronized odometry, calibrated ToF or
+# LiDAR rays, and camera frames to the same mapping contracts used by the simulator.
+[mapping]
+enabled = false
+path = "/var/lib/microduck/maps/occupancy-map.json"
+keyframe_directory = "/var/lib/microduck/maps/keyframes"
+update_interval = 0.2
+
 [audit]
 path = "/var/lib/microduck/brain-audit.jsonl"
 

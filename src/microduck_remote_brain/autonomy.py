@@ -20,6 +20,20 @@ MOTION_ACTIONS = (
     "turn_left",
     "turn_right",
 )
+TRANSLATION_ACTIONS = frozenset(
+    {"walk_forward", "curve_left", "curve_right", "back_up"}
+)
+ORIENTATION_ACTIONS = frozenset(
+    {
+        "turn_left",
+        "turn_right",
+        "scan_left",
+        "scan_right",
+        "scan_center",
+        "reorient_left",
+        "reorient_right",
+    }
+)
 INTERACTION_ACTIONS = ("ground_pick", "tap_left", "tap_right")
 SPECIAL_ACTIONS = ("roulade", "sit_toggle", "sing")
 SCAN_ACTIONS = ("scan_left", "scan_right", "scan_center")
@@ -34,8 +48,9 @@ VISIBLE_WALKING_SPEED = 0.3
 CURVED_WALKING_SPEED = 0.25
 WALK_DURATION = 4.0
 TURN_DURATION = 1.5
-TOF_BLOCKED_MM = 350.0
-TOF_CLEAR_MM = 400.0
+TOF_BLOCKED_MM = 250.0
+TOF_CLEAR_MM = 280.0
+TOF_TURN_MIN_MM = 100.0
 TOF_INTERACTION_MAX_MM = 500.0
 
 AUTONOMOUS_PROMPT = """You are MicroDuck: curious, gentle, playful, cautious, and loyal. Your role
@@ -116,6 +131,7 @@ class OllamaPersonaModel:
             and capabilities.mode == "walk"
             and "sit_toggle" in capabilities.skills
         )
+        scan_completed = bool(recent_behaviors) and recent_behaviors[-1] == "scan_center"
         if (
             self._allow_movement
             and depth is not None
@@ -130,21 +146,43 @@ class OllamaPersonaModel:
         elif self._allow_movement and avoidance_action is not None:
             offered_actions = (avoidance_action,)
         elif self._allow_movement:
+            translation_required = False
             safe_motion = tuple(
                 action
                 for action in MOTION_ACTIONS
                 if _scene_allows_action(action, scene, depth)
+                and f"failed:{action}" not in recent_behaviors
+                and (not recent_behaviors or action != recent_behaviors[-1])
             )
+            if (
+                len(recent_behaviors) >= 2
+                and all(
+                    behavior in ORIENTATION_ACTIONS
+                    for behavior in recent_behaviors[-2:]
+                )
+            ):
+                translations = tuple(
+                    action for action in safe_motion if action in TRANSLATION_ACTIONS
+                )
+                if translations:
+                    safe_motion = translations
+                    translation_required = True
             physical_specials = tuple(
                 action for action in special_actions if action != "sing"
             )
             active_actions = interaction_actions + physical_specials + safe_motion
-            if special_actions and _needs_special_behavior(recent_behaviors):
-                offered_actions = special_actions
+            if translation_required or (scan_completed and safe_motion):
+                offered_actions = safe_motion
+            elif special_actions and _needs_special_behavior(recent_behaviors):
+                offered_actions = tuple(dict.fromkeys(active_actions + special_actions))
             elif active_actions and _needs_active_behavior(recent_behaviors):
                 offered_actions = active_actions
+            elif active_actions:
+                offered_actions = (
+                    active_actions + ("sing",) + self._sound_actions
+                )
             else:
-                offered_actions = active_actions + ("sing",) + self._sound_actions + ("stop",)
+                offered_actions = ("sing",) + self._sound_actions + ("stop",)
         else:
             offered_actions = self._actions
         schema = {
@@ -328,6 +366,8 @@ def _scene_allows_action(
                 depth.left_clearance_mm if action == "turn_left" else depth.right_clearance_mm
             )
             if clearance is not None and clearance < TOF_BLOCKED_MM:
+                if clearance >= TOF_TURN_MIN_MM:
+                    return scene.visibility != "poor"
                 return False
             return scene.visibility != "poor"
         return scene.visibility != "poor" and no_near_obstacle and not explicit_hazards
@@ -377,7 +417,7 @@ def _avoidance_action(depth: DepthObservation | None) -> str | None:
     if not clearances:
         return "stop" if depth.drop_hazard_remembered else "back_up"
     action, clearance = max(clearances.items(), key=lambda item: item[1])
-    if clearance >= TOF_BLOCKED_MM:
+    if clearance >= TOF_TURN_MIN_MM:
         return action
     return "stop" if depth.drop_hazard_remembered else "back_up"
 
@@ -416,27 +456,19 @@ def _safe_interactions(
 
 
 def _safe_special_actions(
-    scene: SceneState,
+    _scene: SceneState,
     depth: DepthObservation | None,
     capabilities: RobotCapabilities | None,
     recent_behaviors: tuple[str, ...],
 ) -> tuple[str, ...]:
     actions: list[str] = []
-    if capabilities is not None and capabilities.mode == "walk":
-        if (
-            "roulade" in capabilities.skills
-            and scene.free_floor == "clear"
-            and scene.visibility == "good"
-            and depth is not None
-            and not depth.drop_hazard_remembered
-            and depth.center_clearance_mm is not None
-            and depth.center_clearance_mm >= 700.0
-        ):
-            actions.append("roulade")
-        if "sit_toggle" in capabilities.skills and not (
-            depth is not None and depth.drop_hazard_remembered
-        ):
-            actions.append("sit_toggle")
+    if (
+        capabilities is not None
+        and capabilities.mode == "walk"
+        and "sit_toggle" in capabilities.skills
+        and not (depth is not None and depth.drop_hazard_remembered)
+    ):
+        actions.append("sit_toggle")
     actions.append("sing")
     last_special = next(
         (behavior for behavior in reversed(recent_behaviors) if behavior in SPECIAL_ACTIONS),

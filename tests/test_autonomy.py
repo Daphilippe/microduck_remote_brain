@@ -386,9 +386,9 @@ def test_tof_clearance_overrides_uncertain_ordinary_visual_obstacle() -> None:
     assert plan.steps[0].arguments["linear_velocity"] == 0.3
 
 
-def test_tof_obstacle_backs_up_when_both_sides_are_blocked(monkeypatch) -> None:
+def test_tof_obstacle_turns_toward_best_tight_side(monkeypatch) -> None:
     response = Response(
-        json.dumps({"message": {"content": decision("back_up")}}).encode()
+        json.dumps({"message": {"content": decision("turn_right")}}).encode()
     )
     captured: dict[str, Any] = {}
 
@@ -402,7 +402,7 @@ def test_tof_obstacle_backs_up_when_both_sides_are_blocked(monkeypatch) -> None:
         scene("Surrounded by obstacles."), depth=depth(200, 180, 220)
     )
 
-    assert captured["format"]["properties"]["action"]["enum"] == ["back_up"]
+    assert captured["format"]["properties"]["action"]["enum"] == ["turn_right"]
 
 
 def test_remembered_center_drop_forces_inspection_and_blocks_forward(monkeypatch) -> None:
@@ -552,9 +552,9 @@ def test_valid_scene_gets_periodic_proactive_head_scan(monkeypatch) -> None:
     assert captured["format"]["properties"]["action"]["enum"] == ["scan_left"]
 
 
-def test_walk_mode_offers_occasional_loaded_special_actions(monkeypatch) -> None:
+def test_walk_mode_keeps_safe_motion_available_when_special_behavior_is_due(monkeypatch) -> None:
     response = Response(
-        json.dumps({"message": {"content": decision("roulade")}}).encode()
+        json.dumps({"message": {"content": decision("sit_toggle")}}).encode()
     )
     captured: dict[str, Any] = {}
 
@@ -577,12 +577,111 @@ def test_walk_mode_offers_occasional_loaded_special_actions(monkeypatch) -> None
         capabilities(),
     )
 
-    assert captured["format"]["properties"]["action"]["enum"] == [
-        "roulade",
-        "sit_toggle",
-        "sing",
-    ]
-    assert plan.steps[0].arguments == {"name": "roulade"}
+    offered = captured["format"]["properties"]["action"]["enum"]
+    assert "walk_forward" in offered
+    assert "curve_left" in offered
+    assert "curve_right" in offered
+    assert "sit_toggle" in offered
+    assert "sing" in offered
+    assert "stop" not in offered
+    assert plan.steps[0].arguments == {"name": "sit_toggle"}
+
+
+def test_safe_motion_window_does_not_offer_stop(monkeypatch) -> None:
+    response = Response(json.dumps({"message": {"content": decision("coo")}}).encode())
+    captured: dict[str, Any] = {}
+
+    def urlopen(request, **_kwargs):
+        captured.update(json.loads(request.data))
+        return response
+
+    monkeypatch.setattr("microduck_remote_brain.autonomy.urllib.request.urlopen", urlopen)
+
+    OllamaPersonaModel("qwen", allow_movement=True).decide(
+        scene("Open floor remains ahead.", free_floor="clear"),
+        depth=depth(900, 900, 900),
+        capabilities=capabilities(),
+        recent_behaviors=("walk_forward", "curve_left"),
+    )
+
+    offered = captured["format"]["properties"]["action"]["enum"]
+    assert "walk_forward" in offered
+    assert "coo" in offered
+    assert "stop" not in offered
+
+
+def test_completed_scan_forces_body_exploration(monkeypatch) -> None:
+    response = Response(
+        json.dumps({"message": {"content": decision("curve_right")}}).encode()
+    )
+    captured: dict[str, Any] = {}
+
+    def urlopen(request, **_kwargs):
+        captured.update(json.loads(request.data))
+        return response
+
+    monkeypatch.setattr("microduck_remote_brain.autonomy.urllib.request.urlopen", urlopen)
+
+    OllamaPersonaModel("qwen", allow_movement=True).decide(
+        scene("The acquisition found open floor.", free_floor="clear"),
+        depth=depth(600, 600, 600),
+        capabilities=capabilities(),
+        recent_behaviors=("scan_left", "scan_right", "scan_center"),
+    )
+
+    actions = captured["format"]["properties"]["action"]["enum"]
+    assert "curve_right" in actions
+    assert "sing" not in actions
+    assert "sit_toggle" not in actions
+    assert "stop" not in actions
+
+
+def test_recently_stalled_translation_is_not_offered_again(monkeypatch) -> None:
+    response = Response(
+        json.dumps({"message": {"content": decision("turn_left")}}).encode()
+    )
+    captured: dict[str, Any] = {}
+
+    def urlopen(request, **_kwargs):
+        captured.update(json.loads(request.data))
+        return response
+
+    monkeypatch.setattr("microduck_remote_brain.autonomy.urllib.request.urlopen", urlopen)
+
+    OllamaPersonaModel("qwen", allow_movement=True).decide(
+        scene("Open but uncertain floor.", free_floor="clear"),
+        depth=depth(600, 600, 600),
+        capabilities=capabilities(),
+        recent_behaviors=("failed:walk_forward", "coo"),
+    )
+
+    actions = captured["format"]["properties"]["action"]["enum"]
+    assert "walk_forward" not in actions
+    assert "turn_left" in actions
+
+
+def test_two_orientation_behaviors_force_safe_translation(monkeypatch) -> None:
+    response = Response(
+        json.dumps({"message": {"content": decision("walk_forward")}}).encode()
+    )
+    captured: dict[str, Any] = {}
+
+    def urlopen(request, **_kwargs):
+        captured.update(json.loads(request.data))
+        return response
+
+    monkeypatch.setattr("microduck_remote_brain.autonomy.urllib.request.urlopen", urlopen)
+
+    OllamaPersonaModel("qwen", allow_movement=True).decide(
+        scene("Clear floor after looking around.", free_floor="clear"),
+        depth=depth(320, 347, 368),
+        capabilities=capabilities(),
+        recent_behaviors=("turn_right", "turn_right"),
+    )
+
+    actions = captured["format"]["properties"]["action"]["enum"]
+    assert actions
+    assert set(actions) <= {"walk_forward", "curve_left", "curve_right"}
 
 
 def test_roller_mode_filters_leg_dependent_special_actions(monkeypatch) -> None:
@@ -602,7 +701,13 @@ def test_roller_mode_filters_leg_dependent_special_actions(monkeypatch) -> None:
         recent_behaviors=("walk_forward", "curve_left", "coo", "turn_right"),
     )
 
-    assert captured["format"]["properties"]["action"]["enum"] == ["sing"]
+    offered = captured["format"]["properties"]["action"]["enum"]
+    assert "walk_forward" in offered
+    assert "curve_left" in offered
+    assert "curve_right" in offered
+    assert "sing" in offered
+    assert "sit_toggle" not in offered
+    assert "stop" not in offered
 
 
 def test_sit_toggle_is_followed_by_stand_recovery(monkeypatch) -> None:

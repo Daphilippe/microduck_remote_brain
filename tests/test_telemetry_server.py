@@ -11,6 +11,7 @@ from microduck_remote_brain.telemetry_server import (
     actions_are_enabled,
     dispatch_control,
     read_autonomy_status,
+    read_mapping,
 )
 
 
@@ -24,6 +25,12 @@ def test_dashboard_rejects_unsuccessful_http_responses() -> None:
     assert "/api/actions/enable" in DASHBOARD
     assert "ToF clearance" in DASHBOARD
     assert "Drop memory" in DASHBOARD
+    assert "Persistent occupancy map" in DASHBOARD
+    assert "Command center views" in DASHBOARD
+    assert "panel-${name}" in DASHBOARD
+    assert "Last scan" in DASHBOARD
+    assert "/api/map" in DASHBOARD
+    assert "setInterval(refreshMap,1000)" in DASHBOARD
     assert "control.disabled=!actionsEnabled" in DASHBOARD
     assert "setInterval(refresh,33)" in DASHBOARD
     assert "TELEMETRY_HZ = 30.0" not in DASHBOARD
@@ -61,6 +68,51 @@ def test_persistent_action_safety_file_controls_enabled_state(tmp_path) -> None:
     path.touch()
 
     assert not actions_are_enabled(path)
+
+
+def test_mapping_endpoint_classifies_grid_and_includes_estimated_pose(tmp_path) -> None:
+    map_path = tmp_path / "map.json"
+    localization_path = tmp_path / "localization.json"
+    map_path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "resolution_m": 0.5,
+                "width": 2,
+                "height": 2,
+                "origin_x_m": -0.5,
+                "origin_y_m": -0.5,
+                "revision": 3,
+                "pose_source": "robotd_odometry",
+                "evidence": [-3, 0, 4, 1],
+            }
+        ),
+        encoding="utf-8",
+    )
+    localization_path.write_text(
+        json.dumps(
+            {
+                "localized": True,
+                "pose_source": "robotd_odometry",
+                "pose": {"x_m": 0.1, "y_m": -0.2, "yaw_rad": 0.5},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = read_mapping(map_path, localization_path)
+
+    assert result["cells"] == [0, -1, 100, -1]
+    assert result["coverage_percent"] == 50.0
+    assert result["observed_cells"] == 2
+    assert result["free_cells"] == 1
+    assert result["occupied_cells"] == 1
+    assert result["unknown_cells"] == 2
+    assert result["status"] == "live"
+    assert result["observed_bounds"] == [0, 0, 1, 1]
+    localization = result["localization"]
+    assert isinstance(localization, dict)
+    assert localization["pose_source"] == "robotd_odometry"
 
 
 def test_autonomy_status_reports_fresh_action(tmp_path) -> None:

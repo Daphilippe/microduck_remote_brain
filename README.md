@@ -26,11 +26,17 @@ On Windows PowerShell, use `.\scripts\install.ps1` followed by
 `uv run pytest`. Add `--voice` or `-Voice` only when microphone capture is
 needed.
 
-For the complete Windows, WSL2 and Docker workflow, read
-[docs/WINDOWS_WSL.md](docs/WINDOWS_WSL.md). The provider boundaries and deferred production work are
-documented in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) and [docs/TODO.md](docs/TODO.md).
-The verified separation between theremin interaction, laser targets, and deterministic point-to-point
-control is documented in [docs/NAVIGATION.md](docs/NAVIGATION.md).
+## Documentation
+
+| Guide | Scope |
+| --- | --- |
+| [Installation](docs/INSTALL.md) | Prerequisites, installers, optional voice dependencies, and release hygiene. |
+| [Windows and WSL](docs/WINDOWS_WSL.md) | Complete Windows, WSL2, Docker, GPU, and local-stack workflow. |
+| [Architecture](docs/ARCHITECTURE.md) | Provider boundaries, stable contracts, safety, and failure behavior. |
+| [Autonomy](docs/AUTONOMY.md) | Observe/decide/act loop, deterministic recovery, ownership, and telemetry states. |
+| [Persona models](docs/PERSONA_MODELS.md) | Scene and action schemas, prompts, model selection, and deterministic resolution. |
+| [Navigation](docs/NAVIGATION.md) | Target-control boundary, odometry, persistent mapping, and startup localization. |
+| [Deferred work](docs/TODO.md) | Security, physical safety, operations, media, and navigation work not yet delivered. |
 
 ## Standalone contract simulation
 
@@ -159,8 +165,9 @@ when current ToF clearance supports movement. The resolver uses only relative sc
 so the same policy applies to other simulator scenes without a map-specific route.
 
 Robot mode and loaded skill policies are refreshed every cycle. Walk mode may occasionally add
-roulade and sit/stand; an autonomous sit is paired with a deterministic stand before the next camera
-capture. Kicks are offered only for a nearby detected ball with the matching policy.
+sit/stand; an autonomous sit is paired with a deterministic stand before the next camera capture.
+Kicks are offered only for a nearby detected ball with the matching policy. Roulade remains a manual
+action until map-based return-to-anchor control is complete.
 Roller mode removes leg-dependent kicks, roulade, and sit/stand while retaining mode-specific
 locomotion and roller crouch when advertised. Autonomy never selects roller mode without an external
 capability proving that rollers are installed. A bounded three-note sound phrase provides solo
@@ -176,6 +183,19 @@ identical image. The invalid scene is never supplied to the action model.
 
 A valid scene also receives a proactive left/right/center scan after five behaviors without head
 acquisition, keeping object and person recognition spatially current.
+
+If all three head views remain unusable, MicroDuck rotates its body toward the safer ToF sector and
+starts a new acquisition. It no longer repeats the same head scan indefinitely from one trunk pose.
+
+After the center scan, the next safe action must move the body. Tight-space exploration prefers an
+in-place turn instead of repeatedly requesting ineffective reverse motion. The small robot may
+advance from 280 mm center clearance; drop and stair safety remain independent. Failed translations
+are temporarily removed from the action vocabulary so the next cycle tries a different strategy.
+After two consecutive turns or scans, safe translational actions are forced when available.
+
+Scripted skills capture their starting X/Y/yaw pose for the occupancy-map navigation layer.
+Autonomous roulade is paused until deterministic return-to-anchor navigation is complete; manual
+roulade remains available.
 
 The gamepad client starts with the local stack and waits safely if the pad is
 asleep. A disconnect sends `robot.stop`; `robotd`'s deadman remains the final

@@ -33,6 +33,16 @@ class RobotState:
     revision: int
     linear_velocity: float
     angular_velocity: float
+    odom_x_m: float | None = None
+    odom_y_m: float | None = None
+    odom_yaw_rad: float | None = None
+    timestamp_s: float | None = None
+    lateral_velocity: float = 0.0
+    gravity: tuple[float, float, float] | None = None
+    gyroscope: tuple[float, float, float] | None = None
+    quaternion: tuple[float, float, float, float] | None = None
+    joints: tuple[float, ...] = ()
+    joint_targets: tuple[float, ...] = ()
 
     @property
     def is_moving(self) -> bool:

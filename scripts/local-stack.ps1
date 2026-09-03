@@ -119,6 +119,8 @@ function Start-TelemetryServer {
             "--autonomy-status-file", (Join-Path $LocalState "autonomy-state.json"),
             "--manual-active-file", (Join-Path $LocalState "manual-active"),
             "--actions-disabled-file", (Join-Path $LocalState "actions-disabled"),
+            "--map-file", (Join-Path $LocalState "maps\occupancy-map.json"),
+            "--localization-file", (Join-Path $LocalState "maps\localization.json"),
             "--enable-control",
             "--robot-host", "127.0.0.1", "--robot-port", "8765"
         )

@@ -268,11 +268,23 @@ class RobotHandler(socketserver.StreamRequestHandler):
 
     def _state(self, body: SimulatedBody) -> None:
         state = body.state()
+        yaw = body.yaw
         self._write(
             {
                 "jsonrpc": "2.0",
                 "method": "robot.state",
-                "params": {"move": {"applied": state["base_velocity"]}},
+                "params": {
+                    "t": state["sim_time"],
+                    "move": {"applied": state["base_velocity"]},
+                    "safety": {"gravity": [0.0, 0.0, -1.0]},
+                    "imu": {
+                        "gyro": state["imu"]["gyro"],
+                        "quat": [math.cos(yaw / 2.0), 0.0, 0.0, math.sin(yaw / 2.0)],
+                    },
+                    "joints": state["positions"],
+                    "targets": state["positions"],
+                    "odom": {"position": [body.x, body.y, 0.22], "yaw": yaw},
+                },
             }
         )
 

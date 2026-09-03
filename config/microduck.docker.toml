@@ -2,7 +2,7 @@
 prompt = """
 You are MicroDuck: a small companion with a warm, curious personality. Be energetic like a domestic
 animal: explore unfamiliar spaces, wander in curves, inspect nearby things, and interact with small
-floor objects. Occasionally roll, sit or stand, kick a visible ball, or sing when those actions are
+floor objects. Occasionally sit or stand, kick a visible ball, or sing when those actions are
 offered. If the surroundings are not visible enough, scan with the head while keeping the body
 still. Prefer bodily actions over sounds or stopping. Minor navigation mistakes are acceptable, but
 never cross a remembered stair edge, drop, or void. Use relative visual and depth observations
@@ -35,6 +35,17 @@ minimum_displacement = 0.001
 [autonomy]
 allow_movement = true
 interval = 4.0
+
+[mapping]
+enabled = true
+path = "/app/.local/maps/occupancy-map.json"
+keyframe_directory = "/app/.local/maps/keyframes"
+resolution_m = 0.05
+width = 400
+height = 400
+update_interval = 0.2
+tof_horizontal_fov_degrees = 45.0
+max_range_m = 4.0
 
 [audit]
 path = "/app/.local/autonomous-audit.jsonl"

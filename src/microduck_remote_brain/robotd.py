@@ -6,7 +6,7 @@ import socket
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypeGuard
 
 from .executor import ExecutionError, ExecutionReason, RobotState
 
@@ -291,18 +291,125 @@ class RobotdClient:
                 "robot.state move.applied must contain vx, vy, and vyaw",
             )
         linear = applied[0]
+        lateral = applied[1]
         angular = applied[2]
-        if not _finite_number(linear) or not _finite_number(angular):
+        if not all(_finite_number(value) for value in (linear, lateral, angular)):
             raise ExecutionError(
                 ExecutionReason.ROBOT_PROTOCOL,
-                "robot.state applied velocity must contain finite linear and angular values",
+                "robot.state applied velocity must contain finite values",
             )
+        odom_x: float | None = None
+        odom_y: float | None = None
+        odom_yaw: float | None = None
+        timestamp: float | None = None
+        odom = params.get("odom")
+        if odom is not None:
+            if not isinstance(odom, dict):
+                raise ExecutionError(
+                    ExecutionReason.ROBOT_PROTOCOL, "robot.state odom must be an object"
+                )
+            position = odom.get("position")
+            yaw = odom.get("yaw")
+            if (
+                not isinstance(position, list)
+                or len(position) < 2
+                or not _finite_number(position[0])
+                or not _finite_number(position[1])
+                or not _finite_number(yaw)
+            ):
+                raise ExecutionError(
+                    ExecutionReason.ROBOT_PROTOCOL,
+                    "robot.state odom must contain finite x, y, and yaw values",
+                )
+            odom_x = float(position[0])
+            odom_y = float(position[1])
+            odom_yaw = float(yaw)
+        state_time = params.get("t")
+        if state_time is not None:
+            if not _finite_number(state_time) or float(state_time) < 0:
+                raise ExecutionError(
+                    ExecutionReason.ROBOT_PROTOCOL,
+                    "robot.state timestamp must be finite and nonnegative",
+                )
+            timestamp = float(state_time)
+        gravity_values = _optional_vector(
+            params.get("safety"), "gravity", 3, "robot.state safety"
+        )
+        imu = params.get("imu")
+        gyroscope_values = _optional_vector(imu, "gyro", 3, "robot.state imu")
+        quaternion_values = _optional_vector(imu, "quat", 4, "robot.state imu")
+        gravity = (
+            None
+            if gravity_values is None
+            else (gravity_values[0], gravity_values[1], gravity_values[2])
+        )
+        gyroscope = (
+            None
+            if gyroscope_values is None
+            else (gyroscope_values[0], gyroscope_values[1], gyroscope_values[2])
+        )
+        quaternion = (
+            None
+            if quaternion_values is None
+            else (
+                quaternion_values[0],
+                quaternion_values[1],
+                quaternion_values[2],
+                quaternion_values[3],
+            )
+        )
+        joints = _optional_number_list(params.get("joints"), "robot.state joints")
+        targets = _optional_number_list(params.get("targets"), "robot.state targets")
         self._revision += 1
-        return RobotState(self._revision, float(linear), float(angular))
+        return RobotState(
+            self._revision,
+            float(linear),
+            float(angular),
+            odom_x,
+            odom_y,
+            odom_yaw,
+            timestamp,
+            float(lateral),
+            gravity,
+            gyroscope,
+            quaternion,
+            joints,
+            targets,
+        )
 
 
-def _finite_number(value: Any) -> bool:
+def _finite_number(value: object) -> TypeGuard[int | float]:
     return isinstance(value, int | float) and not isinstance(value, bool) and math.isfinite(value)
+
+
+def _optional_vector(
+    container: Any, key: str, length: int, description: str
+) -> tuple[float, ...] | None:
+    if container is None:
+        return None
+    if not isinstance(container, dict):
+        raise ExecutionError(ExecutionReason.ROBOT_PROTOCOL, f"{description} must be an object")
+    value = container.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, list) or len(value) != length or not all(
+        _finite_number(item) for item in value
+    ):
+        raise ExecutionError(
+            ExecutionReason.ROBOT_PROTOCOL,
+            f"{description}.{key} must contain {length} finite values",
+        )
+    return tuple(float(item) for item in value)
+
+
+def _optional_number_list(value: Any, description: str) -> tuple[float, ...]:
+    if value is None:
+        return ()
+    if not isinstance(value, list) or not all(_finite_number(item) for item in value):
+        raise ExecutionError(
+            ExecutionReason.ROBOT_PROTOCOL, f"{description} must contain finite values"
+        )
+    return tuple(float(item) for item in value)
 
 
 def _reject_json_constant(value: str) -> None:

@@ -46,7 +46,18 @@ def test_robotd_frames_and_interleaved_state(monkeypatch: pytest.MonkeyPatch) ->
         {
             "jsonrpc": "2.0",
             "method": "robot.state",
-            "params": {"move": {"requested": [0.2, 0.0, 0.0], "applied": [0.2, 0.0, 0.0]}},
+            "params": {
+                "t": 12.5,
+                "move": {"requested": [0.2, 0.0, 0.0], "applied": [0.2, 0.0, 0.0]},
+                "safety": {"gravity": [0.0, 0.0, -1.0]},
+                "imu": {
+                    "gyro": [0.0, 0.0, 0.25],
+                    "quat": [0.9305076, 0.0, 0.0, 0.3662725],
+                },
+                "joints": [0.0] * 15,
+                "targets": [0.0] * 15,
+                "odom": {"position": [1.25, -0.5, 0.1], "yaw": 0.75},
+            },
         },
         {"jsonrpc": "2.0", "id": 2, "result": {"accepted": True}},
     )
@@ -76,6 +87,13 @@ def test_robotd_frames_and_interleaved_state(monkeypatch: pytest.MonkeyPatch) ->
         {"jsonrpc": "2.0", "id": 2, "method": "robot.stop", "params": {}},
     ]
     assert (state.revision, state.linear_velocity, state.angular_velocity) == (1, 0.2, 0.0)
+    assert (state.odom_x_m, state.odom_y_m, state.odom_yaw_rad) == (1.25, -0.5, 0.75)
+    assert state.timestamp_s == 12.5
+    assert state.gravity == (0.0, 0.0, -1.0)
+    assert state.gyroscope == (0.0, 0.0, 0.25)
+    assert state.quaternion == pytest.approx((0.9305076, 0.0, 0.0, 0.3662725))
+    assert state.joints == (0.0,) * 15
+    assert state.joint_targets == (0.0,) * 15
 
 
 def test_robotd_rejects_unaccepted_response(monkeypatch: pytest.MonkeyPatch) -> None:

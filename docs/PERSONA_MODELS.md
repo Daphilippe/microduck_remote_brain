@@ -138,8 +138,9 @@ vocabulary and `stop`. A three-entry activity window requires two physical behav
 least one passes the deterministic scene, depth, and drop-memory gates. This policy uses relative
 observations and therefore does not encode a particular simulation environment.
 
-The runtime additionally filters `roulade`, `sit_toggle`, ball kicks, and `ground_pick` against the
-skill filenames returned by `robot.subscribe` and the current `robot.mode`. `scan_left`,
+The runtime filters `sit_toggle`, ball kicks, and `ground_pick` against the skill filenames returned
+by `robot.subscribe` and the current `robot.mode`. It recognizes but does not autonomously offer
+`roulade` until return-to-anchor navigation is available. `scan_left`,
 `scan_right`, and `scan_center` produce body-stopped `robot.look` plans. `sing` produces a bounded
 sound phrase; it is distinct from the opt-in multi-duck `robot.chorale` protocol.
 

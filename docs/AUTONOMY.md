@@ -65,9 +65,9 @@ turns, and bounded object skills. Reverse escape is unavailable while a drop haz
 After two physical behaviors, the persona may choose a quieter expressive cycle before activity is
 required again.
 
-Every cycle queries `robot.subscribe` and `robot.mode`. Only loaded skills enter the persona schema.
-In walk mode, an open area of at least 700 mm may expose `roulade`; `sit_toggle` is exposed when its
-policy is loaded. An autonomous sit toggle forces a stand toggle at the start of the next cycle,
+Every cycle queries `robot.subscribe` and `robot.mode`. Only loaded and position-compatible skills
+enter the persona schema. In walk mode, `sit_toggle` is exposed when its policy is loaded. An
+autonomous sit toggle forces a stand toggle at the start of the next cycle,
 before camera capture or LLM inference, so an unclear seated view cannot strand the robot. Only then
 does locomotion resume. `tap_left` and `tap_right` map to the corresponding kick only for a nearby
 entity classified as a ball and only when that kick policy is loaded. In roller mode, leg-dependent kicks,
@@ -75,8 +75,8 @@ roulade, and sit/stand are removed; locomotion is interpreted by robotd's roller
 `ground_pick` uses the loaded roller crouch policy. Autonomy never switches into roller mode because
 the current protocol does not report whether physical rollers are installed.
 
-The occasional-action scheduler offers `roulade`, `sit_toggle`, or `sing` after four behaviors with
-no special action, while avoiding immediate repetition. `sing` is a bounded `coo`/`chirp`/`coo`
+The occasional-action scheduler offers `sit_toggle` or `sing` after four behaviors with no special
+action, while avoiding immediate repetition. `sing` is a bounded `coo`/`chirp`/`coo`
 phrase. Native `robot.chorale` is not used for solo behavior because robotd may reject it unless
 chorale participation is explicitly enabled and another duck is present.
 
@@ -96,6 +96,30 @@ repair it.
 Even with valid semantics, five consecutive behaviors without a scan start a proactive
 left/right/center acquisition. This keeps nearby spatial understanding fresh instead of waiting for
 the VLM to admit uncertainty.
+
+If the scene is still invalid after the center view, head movement is considered insufficient. The
+recovery controller then rotates the body toward the ToF side with the greatest safe clearance and
+restarts acquisition from that new orientation. This reorientation has zero linear velocity and is
+suppressed whenever drop memory makes the candidate side unsafe.
+
+Completing the center view forces the next safe choice to be body locomotion rather than another
+sound, sit, or scan. Ordinary forward exploration is allowed from 280 mm center clearance, matching
+MicroDuck's small footprint; in-place turning remains available down to 100 mm lateral clearance.
+These relaxed obstacle margins do not change drop/stair detection. A translation that fails
+displacement verification is recorded as `failed:<action>` and
+removed from the persona schema for the recent-behavior window, forcing a different exploration
+strategy instead of repeating an ineffective command.
+
+Immediate repetition of the same locomotion intent is removed from the schema. After two consecutive
+turn or scan behaviors, the next safe choice is restricted to forward or curved translation when
+one is available. This prevents valid head acquisition from degenerating into endless orientation
+changes without spatial exploration.
+
+Before every scripted skill, autonomy records an `action.anchor_captured` pose containing X, Y, yaw,
+and robot time. The anchor uses the mapping session's already connected `RobotOdometryProvider`
+when available. Roulade is not currently used as an autonomous filler: it may significantly change
+pose and will return only after the deterministic map-based target controller can restore that
+anchor. Manual roulade remains available through the command center and gamepad.
 
 Exploration is environment-independent: decisions use relative entity bearings, semantic floor
 state, and left/center/right ToF clearance. No room name, map coordinate, route, or apartment-specific

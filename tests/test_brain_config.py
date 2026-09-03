@@ -29,6 +29,8 @@ def test_autonomous_simulation_profiles_use_active_cadence(profile: str) -> None
 
     assert config.allow_movement is True
     assert config.interval == 4.0
+    assert config.mapping_enabled is True
+    assert config.mapping_keyframe_directory is not None
 
 
 def test_local_stack_uses_compact_voice_model_only_when_voice_is_enabled() -> None:
@@ -149,4 +151,31 @@ interval = 1
     )
 
     with pytest.raises(ValueError, match="movement currently requires simulator"):
+        load_brain_config(config_path)
+
+
+def test_mapping_rejects_camera_only_physical_profile(tmp_path) -> None:
+    config_path = tmp_path / "unsafe-map.toml"
+    config_path.write_text(
+        """
+[persona]
+prompt = "duck"
+[ollama]
+model = "model"
+[perception]
+source = "camera"
+[robot]
+transport = "unix"
+socket = "/run/microduck/robotd.sock"
+[oracle]
+enabled = false
+[autonomy]
+allow_movement = false
+[mapping]
+enabled = true
+""",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="mapping currently requires a depth"):
         load_brain_config(config_path)
