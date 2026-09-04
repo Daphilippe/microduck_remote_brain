@@ -10,7 +10,8 @@ from .executor import ExecutionError, ExecutionReason
 from .scene import SceneState
 
 VISION_PROMPT = """Extract only visible facts from MicroDuck's forward camera. Identify relevant
-entities, their relative bearing and approximate proximity, free floor, visibility, and immediate
+entities, their bearing relative to the current optical axis and approximate proximity, free floor,
+visibility, and immediate
 visual hazards. Classify free_floor as clear when a continuous traversable floor area is visibly
 open directly ahead, blocked when an object, wall, drop, or unsafe surface obstructs that path, and
 unknown only when the path cannot be seen well enough to decide. Classify visibility as good when

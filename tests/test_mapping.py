@@ -256,6 +256,44 @@ def test_exploration_policy_backs_up_when_no_turn_has_clearance() -> None:
     assert action == "back_up"
 
 
+def test_exploration_policy_navigates_toward_a_reachable_frontier() -> None:
+    from microduck_remote_brain.perception import DepthObservation
+
+    policy = ExplorationPolicy(robot_radius_m=0.0, lookahead_m=0.1)
+    policy.mark_localized()
+    grid = OccupancyGrid(
+        0.1,
+        7,
+        5,
+        0.0,
+        0.0,
+        (
+            OCCUPIED, OCCUPIED, OCCUPIED, OCCUPIED, OCCUPIED, OCCUPIED, OCCUPIED,
+            OCCUPIED, FREE, FREE, FREE, FREE, UNKNOWN, OCCUPIED,
+            OCCUPIED, FREE, FREE, FREE, FREE, UNKNOWN, OCCUPIED,
+            OCCUPIED, FREE, FREE, FREE, FREE, UNKNOWN, OCCUPIED,
+            OCCUPIED, OCCUPIED, OCCUPIED, OCCUPIED, OCCUPIED, OCCUPIED, OCCUPIED,
+        ),
+        1,
+        (),
+    )
+    depth = DepthObservation((), 900.0, 900.0, 900.0)
+
+    facing_away = policy.exploration_action(
+        grid,
+        depth,
+        Pose2D(0.15, 0.25, math.pi, 1.0),
+    )
+    facing_frontier = policy.exploration_action(
+        grid,
+        depth,
+        Pose2D(0.15, 0.25, 0.0, 2.0),
+    )
+
+    assert facing_away == "turn_right"
+    assert facing_frontier == "walk_forward"
+
+
 def test_planar_mapping_ignores_floor_facing_tof_rows() -> None:
     from microduck_remote_brain.perception import DepthObservation
 

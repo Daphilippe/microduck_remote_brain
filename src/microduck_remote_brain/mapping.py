@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -76,12 +77,29 @@ class OccupancyGrid:
 
 
 class ExplorationPolicy:
-    def __init__(self, *, startup_scan_turns: int = 6) -> None:
+    def __init__(
+        self,
+        *,
+        startup_scan_turns: int = 6,
+        robot_radius_m: float = 0.12,
+        heading_tolerance_rad: float = math.radians(20.0),
+        lookahead_m: float = 0.25,
+    ) -> None:
         if startup_scan_turns <= 0:
             raise ValueError("startup scan turns must be positive")
+        if not math.isfinite(robot_radius_m) or robot_radius_m < 0:
+            raise ValueError("robot radius must be finite and nonnegative")
+        if not math.isfinite(heading_tolerance_rad) or not 0 < heading_tolerance_rad < math.pi:
+            raise ValueError("heading tolerance must be between zero and pi")
+        if not math.isfinite(lookahead_m) or lookahead_m <= 0:
+            raise ValueError("lookahead must be finite and positive")
         self._startup_scan_turns = startup_scan_turns
+        self._robot_radius_m = robot_radius_m
+        self._heading_tolerance_rad = heading_tolerance_rad
+        self._lookahead_m = lookahead_m
         self._startup_attempts = 0
         self._exploration_steps = 0
+        self._target_cell: tuple[int, int] | None = None
         self.localized = False
 
     def startup_action(self) -> str | None:
@@ -94,7 +112,10 @@ class ExplorationPolicy:
         self.localized = True
 
     def exploration_action(
-        self, _grid: OccupancyGrid, depth: DepthObservation
+        self,
+        grid: OccupancyGrid,
+        depth: DepthObservation,
+        pose: Pose2D | None = None,
     ) -> str | None:
         if not self.localized:
             return None
@@ -121,11 +142,148 @@ class ExplorationPolicy:
             if max(left, right) < EXPLORATION_TURN_MIN_MM:
                 return "back_up"
             return "turn_left" if left >= right else "turn_right"
+        if pose is not None:
+            frontier_action = self._frontier_action(grid, pose)
+            if frontier_action is not None:
+                return frontier_action
         if self._exploration_steps % 4 == 0:
             return "turn_left" if left >= right else "turn_right"
         if max(left, right) < EXPLORATION_SIDE_CLEAR_MM:
             return "walk_forward"
         return "curve_left" if left >= right else "curve_right"
+
+    def _frontier_action(self, grid: OccupancyGrid, pose: Pose2D) -> str | None:
+        start = _grid_world_to_cell(grid, pose.x_m, pose.y_m)
+        if start is None:
+            self._target_cell = None
+            return None
+        blocked = _inflated_occupied_cells(grid, self._robot_radius_m)
+        blocked.discard(start)
+        parents, distances = _reachable_free_cells(grid, start, blocked)
+        frontiers = {
+            cell
+            for cell in distances
+            if distances[cell] >= 2 and _is_frontier_cell(grid, cell)
+        }
+        if self._target_cell not in frontiers:
+            self._target_cell = min(
+                frontiers,
+                key=lambda cell: (
+                    distances[cell] - 2 * _unknown_neighbor_count(grid, cell),
+                    distances[cell],
+                    cell[1],
+                    cell[0],
+                ),
+                default=None,
+            )
+        target = self._target_cell
+        if target is None:
+            return None
+
+        path = [target]
+        while path[-1] != start:
+            path.append(parents[path[-1]])
+        path.reverse()
+        lookahead_cells = max(1, round(self._lookahead_m / grid.resolution_m))
+        waypoint = path[min(lookahead_cells, len(path) - 1)]
+        waypoint_x = grid.origin_x_m + (waypoint[0] + 0.5) * grid.resolution_m
+        waypoint_y = grid.origin_y_m + (waypoint[1] + 0.5) * grid.resolution_m
+        desired_yaw = math.atan2(waypoint_y - pose.y_m, waypoint_x - pose.x_m)
+        heading_error = _normalize_angle(desired_yaw - pose.yaw_rad)
+        if heading_error > self._heading_tolerance_rad:
+            return "turn_left"
+        if heading_error < -self._heading_tolerance_rad:
+            return "turn_right"
+        return "walk_forward"
+
+
+def _grid_world_to_cell(
+    grid: OccupancyGrid, x_m: float, y_m: float
+) -> tuple[int, int] | None:
+    column = math.floor((x_m - grid.origin_x_m) / grid.resolution_m)
+    row = math.floor((y_m - grid.origin_y_m) / grid.resolution_m)
+    if not 0 <= column < grid.width or not 0 <= row < grid.height:
+        return None
+    return column, row
+
+
+def _grid_neighbors(
+    grid: OccupancyGrid, cell: tuple[int, int], *, diagonals: bool = False
+) -> tuple[tuple[int, int], ...]:
+    column, row = cell
+    offsets = ((-1, 0), (1, 0), (0, -1), (0, 1))
+    if diagonals:
+        offsets += ((-1, -1), (-1, 1), (1, -1), (1, 1))
+    return tuple(
+        (column + delta_column, row + delta_row)
+        for delta_column, delta_row in offsets
+        if 0 <= column + delta_column < grid.width
+        and 0 <= row + delta_row < grid.height
+    )
+
+
+def _grid_value(grid: OccupancyGrid, cell: tuple[int, int]) -> int:
+    column, row = cell
+    return grid.cells[row * grid.width + column]
+
+
+def _unknown_neighbor_count(grid: OccupancyGrid, cell: tuple[int, int]) -> int:
+    return sum(
+        _grid_value(grid, neighbor) == UNKNOWN
+        for neighbor in _grid_neighbors(grid, cell, diagonals=True)
+    )
+
+
+def _is_frontier_cell(grid: OccupancyGrid, cell: tuple[int, int]) -> bool:
+    return _grid_value(grid, cell) == FREE and _unknown_neighbor_count(grid, cell) > 0
+
+
+def _inflated_occupied_cells(
+    grid: OccupancyGrid, robot_radius_m: float
+) -> set[tuple[int, int]]:
+    radius_cells = math.ceil(robot_radius_m / grid.resolution_m)
+    occupied = {
+        (index % grid.width, index // grid.width)
+        for index, value in enumerate(grid.cells)
+        if value == OCCUPIED
+    }
+    if radius_cells == 0:
+        return occupied
+    return {
+        (column + delta_column, row + delta_row)
+        for column, row in occupied
+        for delta_row in range(-radius_cells, radius_cells + 1)
+        for delta_column in range(-radius_cells, radius_cells + 1)
+        if delta_column * delta_column + delta_row * delta_row
+        <= radius_cells * radius_cells
+        and 0 <= column + delta_column < grid.width
+        and 0 <= row + delta_row < grid.height
+    }
+
+
+def _reachable_free_cells(
+    grid: OccupancyGrid,
+    start: tuple[int, int],
+    blocked: set[tuple[int, int]],
+) -> tuple[dict[tuple[int, int], tuple[int, int]], dict[tuple[int, int], int]]:
+    parents: dict[tuple[int, int], tuple[int, int]] = {}
+    distances = {start: 0}
+    pending = deque((start,))
+    while pending:
+        cell = pending.popleft()
+        for neighbor in _grid_neighbors(grid, cell):
+            if neighbor in distances or neighbor in blocked:
+                continue
+            if neighbor != start and _grid_value(grid, neighbor) != FREE:
+                continue
+            parents[neighbor] = cell
+            distances[neighbor] = distances[cell] + 1
+            pending.append(neighbor)
+    return parents, distances
+
+
+def _normalize_angle(angle: float) -> float:
+    return (angle + math.pi) % (2 * math.pi) - math.pi
 
 
 def tof_to_planar_scan(

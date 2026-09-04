@@ -96,6 +96,50 @@ detection, and global planning run on the remote computer. Hardware daemons rema
 calibrated, timestamped sensor samples and motor safety. The mapper consumes contracts rather than
 MuJoCo objects or physical device APIs, so simulation and hardware feed the same pipeline.
 
+The deployment boundary is intentional:
+
+```text
+MicroDuck                                      remote brain
+---------                                      ------------
+robotd: odometry + motor safety  ----\
+tofd: timestamped 8x8 ranges     -----+---- authenticated gateway ---> synchronizer
+mediad: camera frames            ----/                                  |
+                                                                                                                                                                                                                                                                                                 v
+                                                                                                                                                                         localization -> map -> frontier goal
+                                                                                                                                                                                                ^                    -> global path
+                                                                                                                                                                                                |                    -> local command
+                                                                                                                                                                                                +---- observed motion -----+
+```
+
+The remote brain owns the `map` frame and stores the durable spatial memory. `robotd` owns the
+short-lived `odom` frame and remains authoritative for commands that can hurt the robot. A gateway
+disconnect, stale observation, localization loss, or planner failure must result in `robot.stop`;
+none of those failures move planning into the embedded control loop.
+
+### Reference architecture
+
+Established domestic and service robot stacks separate the same concerns instead of treating SLAM
+as one algorithm:
+
+- [Navigation2](https://docs.nav2.org/) separates global planning, local control, costmaps,
+        behavior/recovery, and velocity safety. MicroDuck keeps those boundaries but does not require ROS
+        for the first implementation.
+- [SLAM Toolbox](https://github.com/SteveMacenski/slam_toolbox) serializes the pose graph rather than
+        only a map image, reloads it for localization or continued mapping, and supports lifelong map
+        refinement. This is the target shape for MicroDuck's durable geometric memory.
+- [RTAB-Map multi-session mapping](https://github.com/introlab/rtabmap/wiki/Multi-session) stores
+        synchronized images, depth, and odometry in a graph and joins sessions through loop closures. Its
+        database model is a useful reference once calibrated camera keyframes are available.
+- [Wavefront frontier exploration](https://arxiv.org/abs/1806.03581) selects reachable boundaries
+        between known free and unknown cells. It replaces arbitrary wandering with an explicit
+        information-gain goal.
+
+Consumer floor robots usually have a 360-degree lidar or wide visual SLAM coverage, wheel encoders,
+and a known dock pose. MicroDuck currently has contact odometry and a narrow head-mounted ToF field.
+It therefore needs active head/body scans, explicit uncertainty, and visual loop closure more than a
+vacuum does. Copying a lidar-vacuum configuration without those adaptations would produce a
+plausible-looking but geometrically inconsistent map.
+
 The first implemented layer is deliberately geometric and deterministic:
 
 ```text
@@ -141,12 +185,18 @@ is enabled on the robot.
 
 Recommended next delivery stages:
 
-1. expose synchronized pose, camera, and calibrated ToF frames through the physical gateway;
-2. add a 2.5D elevation/traversability layer and local dynamic obstacle layer;
-3. consume the occupancy/traversability map in a deterministic global planner;
-4. add loop closure and map-frame correction;
-5. train or integrate the Gaussian Splat backend from archived keyframes;
-6. promote persistent visual changes only after multi-view geometric confirmation.
+1. expose synchronized pose, camera, head joints, and calibrated ToF frames through the physical
+        `mediad` gateway; keep `tof.stream` independent from `robot.state`;
+2. add a bounded local controller with progress, stale-input, collision, and drop watchdogs so path
+        segments are closed-loop rather than time-based actions;
+3. reproject all valid ToF zones with head forward kinematics into a 2.5D elevation/traversability
+        layer and maintain a short-lived dynamic-obstacle layer;
+4. store keyframe nodes and odometry/scan constraints in a pose graph, then add visual descriptors
+        and robust loop-closure optimization for multi-session relocalization;
+5. train or integrate a Gaussian Splat backend from archived keyframes for inspection and semantic
+        memory, never as the sole collision map;
+6. promote persistent visual changes only after multi-view geometric confirmation and retain map
+        versions so a bad session can be rolled back.
 
 ## Experimental exploration and startup localization
 
@@ -170,11 +220,22 @@ unlocalized observations to the persistent map. A successful match establishes t
 anchor used for subsequent poses.
 
 After localization, the remote brain keeps `ExplorationPolicy` active instead of treating an
-arbitrary global coverage percentage as completion. It alternates shallow curves through clear
-space and periodic turns to expose new frontiers. A blocked center ray, remembered drop, or
-asymmetric clearance overrides exploration toward the safer side. The remote brain selects and
+arbitrary global coverage percentage as completion. It inflates occupied cells by the robot radius,
+runs a breadth-first search over reachable free space, and keeps a selected free/unknown frontier as
+its goal across autonomy cycles. The next path cell becomes a heading or forward command. Replanning
+occurs whenever map evidence invalidates the current frontier. If no reachable frontier exists, the
+previous local ToF exploration remains available rather than inventing a path through unknown space.
+
+A blocked center ray, remembered drop, or asymmetric clearance overrides the global path toward the
+safer local action. The aligned map pose is published by `MappingWorker` alongside the grid and depth,
+so the chosen movement is now tied to the duck marker shown on the map. The remote brain selects and
 sends the action, which still passes through `ActuatorResolver`, ToF gates, `PlanExecutor`, robot
 deadman handling, and the global action-disable latch.
+
+This first planner is deliberately discrete and conservative. It proves the remote-brain ownership
+and closes the missing `pose -> map -> goal -> movement` connection in simulation. It is not yet the
+physical navigation controller: commands are still bounded action primitives, the occupancy map is
+2D, and no pose graph corrects accumulated drift.
 
 When the autonomous worker publishes map and localization files and the telemetry server receives
 their paths, the command center serves the persistent grid at `/api/map` and renders unknown, free,

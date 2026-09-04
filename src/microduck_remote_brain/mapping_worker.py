@@ -53,6 +53,7 @@ class MappingWorker:
         self._localized = False
         self._latest_grid: OccupancyGrid | None = None
         self._latest_depth: DepthObservation | None = None
+        self._latest_pose: Pose2D | None = None
         self._latest_keyframe: tuple[int, Pose2D, PlanarScan] | None = None
 
     @property
@@ -81,6 +82,11 @@ class MappingWorker:
     def latest(self) -> tuple[OccupancyGrid | None, DepthObservation | None]:
         with self._lock:
             return self._latest_grid, self._latest_depth
+
+    @property
+    def latest_pose(self) -> Pose2D | None:
+        with self._lock:
+            return self._latest_pose
 
     def archive_keyframe(self, image_jpeg: bytes) -> None:
         with self._lock:
@@ -134,6 +140,7 @@ class MappingWorker:
         with self._lock:
             self._latest_grid = grid
             self._latest_depth = depth
+            self._latest_pose = aligned_pose
             self._latest_keyframe = (grid.revision, aligned_pose, scan)
         self._audit.write(
             "mapping.updated",

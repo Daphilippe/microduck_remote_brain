@@ -13,6 +13,8 @@ from microduck_remote_brain.autonomous_cli import (
     _update_mapping,
     _write_status,
 )
+from microduck_remote_brain.autonomy import ActuatorResolver
+from microduck_remote_brain.episode_memory import EpisodeMemory
 from microduck_remote_brain.executor import ExecutionError, ExecutionReason
 from microduck_remote_brain.mapping import (
     ExplorationPolicy,
@@ -22,6 +24,7 @@ from microduck_remote_brain.mapping import (
 )
 from microduck_remote_brain.perception import DepthObservation
 from microduck_remote_brain.robotd import RobotCapabilities
+from microduck_remote_brain.scene import SceneState
 
 
 def test_status_write_retries_transient_windows_sharing_violation(
@@ -221,6 +224,34 @@ def test_failed_complete_head_scan_reorients_body_toward_clearer_side(
     assert context.recent_behaviors[-1] == "reorient_left"
 
 
+def test_invalid_scene_recovery_scans_up_after_right_view(monkeypatch) -> None:
+    plans = []
+    context = SimpleNamespace(
+        config=object(),
+        audit=SimpleNamespace(write=lambda *_args, **_kwargs: None),
+        pause_file=None,
+        activity_file=None,
+        status_file=None,
+        recent_behaviors=["scan_left", "scan_right"],
+        last_behavior={},
+    )
+    monkeypatch.setattr(
+        "microduck_remote_brain.autonomous_cli._execute_plan",
+        lambda _config, plan, *_args: plans.append(plan) or True,
+    )
+
+    assert _run_visual_recovery(
+        context,
+        ExecutionError(ExecutionReason.ROBOT_PROTOCOL, "invalid scene"),
+        None,
+        RobotCapabilities("walk", frozenset()),
+        100,
+    )
+
+    assert context.recent_behaviors[-1] == "scan_up"
+    assert plans[0].steps[1].arguments["z"] == 0.35
+
+
 def test_mapping_update_uses_simulator_pose_depth_and_image(tmp_path) -> None:
     events = []
 
@@ -298,3 +329,85 @@ def test_action_anchor_reuses_robot_odometry_pose() -> None:
         "yaw_rad": 0.75,
         "timestamp_s": 7.0,
     }
+
+
+def test_cycle_turns_around_when_approached_interest_disappears(
+    monkeypatch, tmp_path
+) -> None:
+    plans = []
+    memory = EpisodeMemory()
+    approached_scene = SceneState.from_dict(
+        {
+            "summary": "A red ball is centered nearby",
+            "entities": [
+                {
+                    "kind": "ball",
+                    "bearing": "center",
+                    "proximity": "mid",
+                    "confidence": 0.9,
+                }
+            ],
+            "free_floor": "clear",
+            "visibility": "good",
+            "hazards": [],
+        }
+    )
+    current_scene = SceneState.from_dict(
+        {
+            "summary": "The ball is now too close to see",
+            "entities": [],
+            "free_floor": "clear",
+            "visibility": "good",
+            "hazards": [],
+        }
+    )
+
+    class FakePerception:
+        def capture(self) -> bytes:
+            return b"jpeg"
+
+        def capture_depth(self) -> DepthObservation:
+            return DepthObservation((), 600.0, 180.0, 300.0)
+
+    class ForbiddenPersona:
+        def decide(self, *_args, **_kwargs):
+            raise AssertionError("deterministic memory recovery must bypass the persona")
+
+    monkeypatch.setattr(
+        "microduck_remote_brain.autonomous_cli.SimulatorPerception", FakePerception
+    )
+    memory.remember(approached_scene, None, "walk_forward")
+    context = SimpleNamespace(
+        config=object(),
+        perception=FakePerception(),
+        vision=SimpleNamespace(interpret=lambda _image: current_scene),
+        persona=ForbiddenPersona(),
+        actuators=ActuatorResolver(allow_movement=True),
+        audit=SimpleNamespace(write=lambda *_args, **_kwargs: None),
+        pause_file=None,
+        activity_file=None,
+        status_file=tmp_path / "status.json",
+        drop_memory=SimpleNamespace(update=lambda value: value),
+        mapping_session=None,
+        mapping_pose_provider=None,
+        mapping_worker=None,
+        exploration_policy=ExplorationPolicy(),
+        episode_memory=memory,
+        recent_behaviors=["walk_forward"],
+        last_behavior={},
+    )
+    monkeypatch.setattr(
+        "microduck_remote_brain.autonomous_cli._robot_capabilities",
+        lambda _config: RobotCapabilities("walk", frozenset()),
+    )
+    monkeypatch.setattr(
+        "microduck_remote_brain.autonomous_cli._execute_plan",
+        lambda _config, plan, *_args: plans.append(plan) or True,
+    )
+    try:
+        assert _run_cycle(context)
+    finally:
+        memory.close()
+
+    assert context.recent_behaviors[-1] == "turn_around_left"
+    assert plans[0].steps[0].arguments["duration"] == 6.3

@@ -174,6 +174,20 @@ wandering, inspection turns, and small-object interactions. Ordinary visual unce
 when current ToF clearance supports movement. The resolver uses only relative scene and depth facts,
 so the same policy applies to other simulator scenes without a map-specific route.
 
+Each completed autonomous cycle also enters a short episodic memory containing the semantic scene,
+camera axis, ToF summary, selected action, and execution outcome. Its serialized snapshot is prepared
+in a background worker while the robot acts or waits between cycles. The persona compares those
+episodes with the current scene instead of receiving only action names. Memory length is variable:
+the model releases a completed local exploration thread when its older details are no longer useful,
+while a hard episode limit and a budget derived from 20% of the Ollama context window prevent prompt
+growth. Failed translations remain in memory as stalled outcomes.
+
+If MicroDuck approaches a centered nearby point of interest and that entity disappears from the next
+good semantic scene, the memory layer treats it as a likely close-range arrival. It bypasses another
+approach decision and performs one bounded in-place half-turn toward the safer ToF side, then releases
+the completed exploration thread. Remembered drops and insufficient side clearance still block this
+recovery through the same actuator safety checks as ordinary turns.
+
 Robot mode and loaded skill policies are refreshed every cycle. Walk mode may occasionally add
 sit/stand; an autonomous sit is paired with a deterministic stand before the next camera capture.
 Kicks are offered only for a nearby detected ball with the matching policy. Roulade remains a manual
@@ -184,15 +198,19 @@ capability proving that rollers are installed. A bounded three-note sound phrase
 singing; native chorale remains an explicit multi-duck opt-in.
 
 When visual context is insufficient, MicroDuck stops its body and scans only its head left, right,
-then center through `robot.look`. The acquisition sequence remains subordinate to remembered-drop
-safety and the global action-disable latch.
+up, down toward the nearby floor, then center through `robot.look`. These vertical views improve
+context for a camera only about 20 cm above the floor. The acquisition sequence remains subordinate
+to remembered-drop safety and the global action-disable latch.
 
 An unusable camera frame or invalid semantic scene triggers the same scan directly, before persona
 planning. MicroDuck therefore changes its viewpoint instead of remaining degraded and retrying an
 identical image. The invalid scene is never supplied to the action model.
 
-A valid scene also receives a proactive left/right/center scan after five behaviors without head
-acquisition, keeping object and person recognition spatially current.
+A valid scene also receives the proactive five-view scan after five behaviors without head
+acquisition, keeping object and person recognition spatially current. Semantic entity bearings are
+relative to the current camera axis. An interest discovered while the head is turned left or right
+therefore forces the next safe exploration step to advance on a matching left or right curve instead
+of treating the center of that image as straight ahead of the body.
 
 If all three head views remain unusable, MicroDuck rotates its body toward the safer ToF sector and
 starts a new acquisition. It no longer repeats the same head scan indefinitely from one trunk pose.
@@ -204,9 +222,12 @@ are temporarily removed from the action vocabulary so the next cycle tries a dif
 After two consecutive turns or scans, safe translational actions are forced when available.
 
 When experimental mapping is enabled, scripted skills capture their starting X/Y/yaw pose for the
-occupancy-map navigation layer. Mapping is disabled in the default profiles while localization and
-map quality remain under validation. Autonomous roulade is paused until deterministic
-return-to-anchor navigation is complete; manual roulade remains available.
+occupancy-map navigation layer. Exploration keeps a reachable free/unknown frontier as a persistent
+goal, plans through known free cells with robot-radius obstacle inflation, and turns or advances from
+the current aligned map pose. Fresh ToF drop and clearance evidence can always override that global
+path. Mapping is disabled in the default profiles while localization and map quality remain under
+validation. Autonomous roulade is paused until deterministic return-to-anchor navigation is
+complete; manual roulade remains available.
 
 The gamepad client starts with the local stack and waits safely if the pad is
 asleep. A disconnect sends `robot.stop`; `robotd`'s deadman remains the final

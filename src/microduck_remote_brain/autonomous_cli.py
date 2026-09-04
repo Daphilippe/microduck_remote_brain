@@ -10,9 +10,15 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from .audit import JsonlAuditLog
-from .autonomy import ActuatorResolver, OllamaPersonaModel, PersonaIntent
+from .autonomy import (
+    ActuatorResolver,
+    OllamaPersonaModel,
+    PersonaIntent,
+    current_camera_axis,
+)
 from .body_oracle import TcpBodyOracle
 from .brain_config import BrainConfig, load_brain_config
+from .episode_memory import EpisodeMemory
 from .executor import ExecutionError, ExecutionReason, PlanExecutor
 from .localization import RobotOdometryProvider
 from .mapping import ExplorationPolicy, MappingSession, OccupancyGrid, OccupancyGridMapper
@@ -48,6 +54,7 @@ class CycleContext:
     mapping_pose_provider: RobotOdometryProvider | None
     mapping_worker: MappingWorker | None
     exploration_policy: ExplorationPolicy
+    episode_memory: EpisodeMemory
     recent_behaviors: list[str]
     last_behavior: dict[str, object]
 
@@ -75,6 +82,7 @@ def main(argv: list[str] | None = None) -> int:
         args.pid_file.write_text(str(os.getpid()), encoding="ascii")
     mapping_pose_provider: RobotOdometryProvider | None = None
     mapping_worker: MappingWorker | None = None
+    episode_memory: EpisodeMemory | None = None
     try:
         config = load_brain_config(args.config)
         verify_local_foundations(
@@ -99,6 +107,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         perception = _perception_provider(config)
         audit = JsonlAuditLog(config.audit_path)
+        episode_memory = EpisodeMemory(context_budget=persona.episodic_context_budget)
         mapping_session = None
         if config.mapping_enabled:
             mapper = _load_mapping(config)
@@ -139,6 +148,7 @@ def main(argv: list[str] | None = None) -> int:
             mapping_pose_provider,
             mapping_worker,
             ExplorationPolicy(),
+            episode_memory,
             [],
             {},
         )
@@ -199,6 +209,8 @@ def main(argv: list[str] | None = None) -> int:
             mapping_worker.stop()
         if mapping_pose_provider is not None:
             mapping_pose_provider.close()
+        if episode_memory is not None:
+            episode_memory.close()
         if args.activity_file is not None:
             args.activity_file.unlink(missing_ok=True)
         if args.pid_file is not None:
@@ -233,8 +245,10 @@ def _run_cycle(context: CycleContext) -> bool:
         )
         return _run_visual_recovery(context, wrapped, None, capabilities, 0)
     mapping_worker = getattr(context, "mapping_worker", None)
+    map_pose = None
     if mapping_worker is not None:
         map_grid, depth = mapping_worker.latest()
+        map_pose = mapping_worker.latest_pose
         if depth is None and isinstance(context.perception, SimulatorPerception):
             depth = context.drop_memory.update(context.perception.capture_depth())
         if mapping_worker.localized:
@@ -277,18 +291,23 @@ def _run_cycle(context: CycleContext) -> bool:
         observation=scene.summary,
     )
     exploration_action = (
-        context.exploration_policy.exploration_action(map_grid, depth)
+        context.exploration_policy.exploration_action(map_grid, depth, map_pose)
         if map_grid is not None and depth is not None
         else None
     )
+    camera_axis = current_camera_axis(tuple(context.recent_behaviors))
+    departure_action = context.episode_memory.departure_action(scene, depth)
     intent = (
-        PersonaIntent(exploration_action, "single", "curious", "")
+        PersonaIntent(departure_action, "single", "curious", "Moving on.", True)
+        if departure_action is not None
+        else PersonaIntent(exploration_action, "single", "curious", "")
         if exploration_action is not None
         else context.persona.decide(
             scene,
             depth=depth,
             capabilities=capabilities,
             recent_behaviors=tuple(context.recent_behaviors),
+            episodic_context=context.episode_memory.context(),
         )
     )
     intent_value = asdict(intent)
@@ -347,6 +366,13 @@ def _run_cycle(context: CycleContext) -> bool:
             failed_behavior = f"failed:{intent.action}"
             context.recent_behaviors.append(failed_behavior)
             del context.recent_behaviors[:-6]
+            context.episode_memory.remember(
+                scene,
+                depth,
+                intent.action,
+                outcome="stalled",
+                camera_axis=camera_axis,
+            )
             context.audit.write(
                 "behavior.stalled",
                 action=intent.action,
@@ -354,6 +380,13 @@ def _run_cycle(context: CycleContext) -> bool:
                 message=str(error),
             )
         raise
+    context.episode_memory.remember(
+        scene,
+        depth,
+        intent.action,
+        release=intent.release_memory,
+        camera_axis=camera_axis,
+    )
     context.recent_behaviors.append(intent.action)
     del context.recent_behaviors[:-6]
     context.last_behavior.clear()
@@ -463,7 +496,12 @@ def _run_visual_recovery(
     previous = context.recent_behaviors[-1] if context.recent_behaviors else None
     body_reorientation = _visual_recovery_turn(previous, depth)
     scan_action = (
-        {"scan_left": "scan_right", "scan_right": "scan_center"}.get(previous)
+        {
+            "scan_left": "scan_right",
+            "scan_right": "scan_up",
+            "scan_up": "scan_down",
+            "scan_down": "scan_center",
+        }.get(previous)
         if previous is not None
         else None
     )
@@ -484,16 +522,22 @@ def _run_visual_recovery(
             {"id": "feedback", "tool": "sound", "arguments": {"tag": "chirp"}},
         ]
     else:
-        target_y = {"scan_left": 0.35, "scan_right": -0.35, "scan_center": 0.0}[action]
+        target_x, target_y, target_z = {
+            "scan_left": (0.5, 0.35, 0.0),
+            "scan_right": (0.5, -0.35, 0.0),
+            "scan_up": (0.45, 0.0, 0.35),
+            "scan_down": (0.3, 0.0, -0.15),
+            "scan_center": (0.5, 0.0, 0.0),
+        }[action]
         steps = [
             {"id": "hold-body", "tool": "stop", "arguments": {}},
             {
                 "id": "scan",
                 "tool": "look",
                 "arguments": {
-                    "x": 0.5,
+                    "x": target_x,
                     "y": target_y,
-                    "z": 0.0,
+                    "z": target_z,
                     "neck_pitch": 0.0,
                 },
             },

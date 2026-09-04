@@ -90,6 +90,14 @@ def test_passive_autonomy_recovers_qwen_decision_from_thinking(monkeypatch) -> N
     assert captured["options"]["num_ctx"] == 4096
 
 
+def test_episode_budget_tracks_the_configured_model_context_window() -> None:
+    small = OllamaPersonaModel("qwen", context_window=2048)
+    large = OllamaPersonaModel("qwen", context_window=8192)
+
+    assert small.episodic_context_budget == 1638
+    assert large.episodic_context_budget == 6553
+
+
 def test_movement_decision_becomes_bounded_plan(monkeypatch) -> None:
     response = Response(
         json.dumps({"message": {"content": decision("walk_forward")}}).encode()
@@ -198,6 +206,44 @@ def test_persona_receives_bounded_recent_behavior_context(monkeypatch) -> None:
     assert "Recent behaviors, oldest first: coo, stop+coo" in content
 
 
+def test_persona_receives_structured_episode_evolution_and_can_release(monkeypatch) -> None:
+    response = Response(
+        json.dumps(
+            {
+                "message": {
+                    "content": json.dumps(
+                        {
+                            "action": "turn_left",
+                            "sound_pattern": "single",
+                            "voice_style": "curious",
+                            "utterance": "",
+                            "release_memory": True,
+                        }
+                    )
+                }
+            }
+        ).encode()
+    )
+    captured: dict[str, Any] = {}
+
+    def urlopen(request, **_kwargs):
+        captured.update(json.loads(request.data))
+        return response
+
+    monkeypatch.setattr("microduck_remote_brain.autonomy.urllib.request.urlopen", urlopen)
+
+    intent = OllamaPersonaModel("qwen", allow_movement=True).decide(
+        scene("The object is no longer visible.", free_floor="clear"),
+        recent_behaviors=("walk_forward",),
+        episodic_context='[{"scene":{"summary":"A ball is ahead"},"action":"walk_forward"}]',
+    )
+
+    content = captured["messages"][0]["content"]
+    assert "Recent episodes, oldest first" in content
+    assert "A ball is ahead" in content
+    assert intent.release_memory is True
+
+
 def test_resolver_downgrades_movement_when_scene_is_unsafe() -> None:
     current_scene = scene("An obstacle is ahead.", free_floor="blocked", hazards=["obstacle"])
 
@@ -219,6 +265,24 @@ def test_resolver_allows_cautious_turn_when_floor_is_unknown() -> None:
 
     assert plan.steps[0].tool == "walk"
     assert plan.steps[0].arguments["angular_velocity"] == 0.5
+
+
+def test_resolver_builds_bounded_memory_driven_turn_around() -> None:
+    current_scene = scene("The approached object is no longer visible.", free_floor="clear")
+    current_depth = depth(600, 180, 300)
+
+    plan = ActuatorResolver(allow_movement=True).resolve(
+        PersonaIntent("turn_around_left", "single", "curious", "Moving on.", True),
+        current_scene,
+        current_depth,
+    )
+
+    assert [step.tool for step in plan.steps] == ["walk", "stop", "sound"]
+    assert plan.steps[0].arguments == {
+        "linear_velocity": 0.0,
+        "angular_velocity": 0.5,
+        "duration": 6.3,
+    }
 
 
 def test_persona_scans_head_when_scene_context_is_insufficient(monkeypatch) -> None:
@@ -499,11 +563,11 @@ def test_scan_moves_head_only_after_holding_body_still() -> None:
     }
 
 
-def test_head_scan_completes_left_right_center_sequence(monkeypatch) -> None:
+def test_head_scan_completes_horizontal_vertical_center_sequence(monkeypatch) -> None:
     responses = iter(
         [
             Response(json.dumps({"message": {"content": decision(action)}}).encode())
-            for action in ("scan_left", "scan_right", "scan_center")
+            for action in ("scan_left", "scan_right", "scan_up", "scan_down", "scan_center")
         ]
     )
     captured_actions: list[list[str]] = []
@@ -522,12 +586,87 @@ def test_head_scan_completes_left_right_center_sequence(monkeypatch) -> None:
         scene("Left side is visible.", free_floor="clear"),
         recent_behaviors=(first.action,),
     )
-    model.decide(
+    third = model.decide(
         scene("Right side is visible.", free_floor="clear"),
         recent_behaviors=(first.action, second.action),
     )
+    fourth = model.decide(
+        scene("Upper view is visible.", free_floor="clear"),
+        recent_behaviors=(first.action, second.action, third.action),
+    )
+    model.decide(
+        scene("Floor nearby is visible.", free_floor="clear"),
+        recent_behaviors=(first.action, second.action, third.action, fourth.action),
+    )
 
-    assert captured_actions == [["scan_left"], ["scan_right"], ["scan_center"]]
+    assert captured_actions == [
+        ["scan_left"],
+        ["scan_right"],
+        ["scan_up"],
+        ["scan_down"],
+        ["scan_center"],
+    ]
+
+
+def test_interest_found_with_left_camera_forces_left_curved_approach(monkeypatch) -> None:
+    response = Response(
+        json.dumps({"message": {"content": decision("curve_left")}}).encode()
+    )
+    captured: dict[str, Any] = {}
+
+    def urlopen(request, **_kwargs):
+        captured.update(json.loads(request.data))
+        return response
+
+    monkeypatch.setattr("microduck_remote_brain.autonomy.urllib.request.urlopen", urlopen)
+    observed = SceneState.from_dict(
+        {
+            "summary": "A chair appears in the left camera view.",
+            "entities": [
+                {
+                    "kind": "chair",
+                    "bearing": "center",
+                    "proximity": "mid",
+                    "confidence": 0.9,
+                }
+            ],
+            "free_floor": "clear",
+            "visibility": "good",
+            "hazards": [],
+        }
+    )
+
+    OllamaPersonaModel("qwen", allow_movement=True).decide(
+        observed,
+        depth=depth(600, 600, 600),
+        recent_behaviors=("scan_left",),
+    )
+
+    assert captured["format"]["properties"]["action"]["enum"] == ["curve_left"]
+    assert "Camera axis relative to the trunk: left" in captured["messages"][0]["content"]
+
+
+def test_vertical_scan_targets_above_and_nearby_floor() -> None:
+    resolver = ActuatorResolver(allow_movement=True)
+    current_scene = scene("Looking vertically.", visibility="unknown")
+
+    up = resolver.resolve(PersonaIntent("scan_up", "single", "curious", ""), current_scene)
+    down = resolver.resolve(
+        PersonaIntent("scan_down", "single", "curious", ""), current_scene
+    )
+
+    assert up.steps[1].arguments == {
+        "x": 0.45,
+        "y": 0.0,
+        "z": 0.35,
+        "neck_pitch": 0.0,
+    }
+    assert down.steps[1].arguments == {
+        "x": 0.3,
+        "y": 0.0,
+        "z": -0.15,
+        "neck_pitch": 0.0,
+    }
 
 
 def test_valid_scene_gets_periodic_proactive_head_scan(monkeypatch) -> None:

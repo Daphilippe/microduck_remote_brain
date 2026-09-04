@@ -51,6 +51,7 @@ def test_worker_publishes_each_depth_and_odometry_acquisition(tmp_path) -> None:
     assert grid is not None
     assert grid.revision == 1
     assert depth is not None
+    assert worker.latest_pose == Pose2D(0.0, 0.0, 0.0, 1.0)
     assert map_path.exists()
     update = next(facts for event, facts in events if event == "mapping.updated")
     assert update["revision"] == 1
