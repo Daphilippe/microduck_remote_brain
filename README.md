@@ -4,6 +4,11 @@ Deterministic planning and verification layer for a simulated or physical
 MicroDuck. The brain sends high-level intents to `robotd`; it never accesses
 motors or `RemoteIo` directly.
 
+![MicroDuck command center connected to the complete MuJoCo stack](docs/media/command-center-control.png)
+
+[Watch the command-center tour](docs/media/command-center-tour.mp4) or read the
+[command-center guide](docs/COMMAND_CENTER.md) for an explanation of each view.
+
 The first supported path is deliberately small:
 
 ```text
@@ -36,6 +41,7 @@ needed.
 | [Autonomy](docs/AUTONOMY.md) | Observe/decide/act loop, deterministic recovery, ownership, and telemetry states. |
 | [Persona models](docs/PERSONA_MODELS.md) | Scene and action schemas, prompts, model selection, and deterministic resolution. |
 | [Navigation](docs/NAVIGATION.md) | Target-control boundary, odometry, persistent mapping, and startup localization. |
+| [Command center](docs/COMMAND_CENTER.md) | Real-stack launch, screenshots, controls, mapping status, and system diagnostics. |
 | [Deferred work](docs/TODO.md) | Security, physical safety, operations, media, and navigation work not yet delivered. |
 
 ## Standalone contract simulation
@@ -109,6 +115,10 @@ trunk pose, simulation time, IMU gravity/gyro/quaternion, nominal voltage and
 temperatures, plus the simulated VL53L5CX 8x8 ToF frame. Both PCs must be on the
 same private network. The native MuJoCo window remains local to the
 Windows/WSLg session; it is not a network video stream.
+
+The screenshots and short video in the [command-center guide](docs/COMMAND_CENTER.md) were captured
+from this complete stack, not from the standalone contract simulator. The guide also explains the
+Control, Mapping, and Systems views and identifies which mapping features are disabled by default.
 
 The MuJoCo viewer is synchronized at 50 Hz. Its `head_camera` is rendered at 640x480 and 30 fps,
 and the telemetry MJPEG stream is scheduled at 30 Hz. The autonomous simulation
@@ -193,9 +203,10 @@ advance from 280 mm center clearance; drop and stair safety remain independent. 
 are temporarily removed from the action vocabulary so the next cycle tries a different strategy.
 After two consecutive turns or scans, safe translational actions are forced when available.
 
-Scripted skills capture their starting X/Y/yaw pose for the occupancy-map navigation layer.
-Autonomous roulade is paused until deterministic return-to-anchor navigation is complete; manual
-roulade remains available.
+When experimental mapping is enabled, scripted skills capture their starting X/Y/yaw pose for the
+occupancy-map navigation layer. Mapping is disabled in the default profiles while localization and
+map quality remain under validation. Autonomous roulade is paused until deterministic
+return-to-anchor navigation is complete; manual roulade remains available.
 
 The gamepad client starts with the local stack and waits safely if the pad is
 asleep. A disconnect sends `robot.stop`; `robotd`'s deadman remains the final

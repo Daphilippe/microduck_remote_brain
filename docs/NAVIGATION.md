@@ -148,9 +148,15 @@ Recommended next delivery stages:
 5. train or integrate the Gaussian Splat backend from archived keyframes;
 6. promote persistent visual changes only after multi-view geometric confirmation.
 
-## Implemented exploration and startup localization
+## Experimental exploration and startup localization
 
-The active mapping path does not consume the simulator `trunk` position. `RobotOdometryProvider`
+The implementation described below exists behind the mapping configuration, but mapping is disabled
+in the default simulation and Docker profiles while localization and map quality remain under
+validation. The standard local launcher also does not pass map and localization files to the
+telemetry server, so the command center correctly displays the persistent map as **unavailable** in
+a normal run. Live ToF telemetry and the autonomy clearance/drop-memory gates remain active.
+
+When enabled, the mapping path does not consume the simulator `trunk` position. `RobotOdometryProvider`
 subscribes to `robot.state` and uses `odom.position`, `odom.yaw`, and the robot timestamp. This is
 the same odometry contract expected from physical `robotd`. Maps and localization records declare
 `pose_source = "robotd_odometry"`; maps created by the earlier simulator-truth prototype are moved
@@ -170,7 +176,9 @@ asymmetric clearance overrides exploration toward the safer side. The remote bra
 sends the action, which still passes through `ActuatorResolver`, ToF gates, `PlanExecutor`, robot
 deadman handling, and the global action-disable latch.
 
-The command center serves the persistent grid at `/api/map` and renders unknown, free, and occupied
-cells at one update per second. Its duck marker comes from the persisted robot-odometry localization
-record, never from `/api/state.trunk`. The panel shows map revision, coverage, pose source, and the
-estimated position so accidental simulator-truth use remains visible during development.
+When the autonomous worker publishes map and localization files and the telemetry server receives
+their paths, the command center serves the persistent grid at `/api/map` and renders unknown, free,
+and occupied cells at one update per second. Its duck marker comes from the persisted robot-odometry
+localization record, never from `/api/state.trunk`. The panel shows map revision, coverage, pose
+source, and the estimated position so accidental simulator-truth use remains visible during
+development.
