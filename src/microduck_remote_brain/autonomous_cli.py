@@ -11,7 +11,10 @@ from pathlib import Path
 
 from .audit import JsonlAuditLog
 from .autonomy import (
+    TRANSLATION_ACTIONS,
     ActuatorResolver,
+    ApproachDecision,
+    ApproachTracker,
     OllamaPersonaModel,
     PersonaIntent,
     current_camera_axis,
@@ -54,6 +57,7 @@ class CycleContext:
     mapping_pose_provider: RobotOdometryProvider | None
     mapping_worker: MappingWorker | None
     exploration_policy: ExplorationPolicy
+    approach_tracker: ApproachTracker
     episode_memory: EpisodeMemory
     recent_behaviors: list[str]
     last_behavior: dict[str, object]
@@ -148,6 +152,7 @@ def main(argv: list[str] | None = None) -> int:
             mapping_pose_provider,
             mapping_worker,
             ExplorationPolicy(),
+            ApproachTracker(),
             episode_memory,
             [],
             {},
@@ -296,10 +301,33 @@ def _run_cycle(context: CycleContext) -> bool:
         else None
     )
     camera_axis = current_camera_axis(tuple(context.recent_behaviors))
-    departure_action = context.episode_memory.departure_action(scene, depth)
+    panorama_action = context.episode_memory.uniform_panorama_action(
+        scene, depth, camera_axis
+    )
+    departure_action = panorama_action or context.episode_memory.departure_action(scene, depth)
+    approach_tracker = getattr(context, "approach_tracker", None)
+    approach_decision: ApproachDecision | None = (
+        approach_tracker.decide(scene, depth, tuple(context.recent_behaviors))
+        if approach_tracker is not None and departure_action is None
+        else None
+    )
+    if (
+        approach_tracker is not None
+        and approach_decision is not None
+        and approach_decision.action is None
+    ):
+        approach_tracker.commit(approach_decision)
+        approach_decision = None
     intent = (
         PersonaIntent(departure_action, "single", "curious", "Moving on.", True)
         if departure_action is not None
+        else PersonaIntent(
+            approach_decision.action,
+            "single",
+            "curious",
+            "Let me line that up.",
+        )
+        if approach_decision is not None and approach_decision.action is not None
         else PersonaIntent(exploration_action, "single", "curious", "")
         if exploration_action is not None
         else context.persona.decide(
@@ -310,6 +338,14 @@ def _run_cycle(context: CycleContext) -> bool:
             episodic_context=context.episode_memory.context(),
         )
     )
+    if intent.action in TRANSLATION_ACTIONS and camera_axis != "center":
+        intent = PersonaIntent(
+            "scan_center",
+            "single",
+            "curious",
+            "Let me face forward first.",
+        )
+        approach_decision = None
     intent_value = asdict(intent)
     context.audit.write("persona.decided", intent=intent_value)
     plan = context.actuators.resolve(intent, scene, depth, capabilities)
@@ -387,6 +423,8 @@ def _run_cycle(context: CycleContext) -> bool:
         release=intent.release_memory,
         camera_axis=camera_axis,
     )
+    if approach_tracker is not None and approach_decision is not None:
+        approach_tracker.commit(approach_decision)
     context.recent_behaviors.append(intent.action)
     del context.recent_behaviors[:-6]
     context.last_behavior.clear()

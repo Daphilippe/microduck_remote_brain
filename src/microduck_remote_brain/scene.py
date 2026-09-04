@@ -42,19 +42,21 @@ class SceneState:
     free_floor: str
     visibility: str
     hazards: tuple[str, ...]
+    visual_content: str = "unknown"
 
     @classmethod
     def from_dict(cls, value: object) -> SceneState:
         if not isinstance(value, dict):
             raise ValueError("scene state must be an object")
         required = {"summary", "entities", "free_floor", "visibility", "hazards"}
-        if set(value) != required:
+        if not required <= set(value) or not set(value) <= required | {"visual_content"}:
             raise ValueError("scene state has invalid fields")
         summary = value["summary"]
         entities = value["entities"]
         free_floor = value["free_floor"]
         visibility = value["visibility"]
         hazards = value["hazards"]
+        visual_content = value.get("visual_content", "unknown")
         if not isinstance(summary, str) or not summary.strip():
             raise ValueError("scene summary must be a non-empty string")
         if not isinstance(entities, list):
@@ -67,12 +69,15 @@ class SceneState:
             not isinstance(hazard, str) or not hazard for hazard in hazards
         ):
             raise ValueError("scene hazards must be an array of non-empty strings")
+        if visual_content not in {"informative", "uniform", "unknown"}:
+            raise ValueError("scene visual_content is invalid")
         return cls(
             summary.strip(),
             tuple(SceneEntity.from_dict(entity) for entity in entities),
             free_floor,
             visibility,
             tuple(hazards),
+            visual_content,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -90,4 +95,5 @@ class SceneState:
             "free_floor": self.free_floor,
             "visibility": self.visibility,
             "hazards": list(self.hazards),
+            "visual_content": self.visual_content,
         }

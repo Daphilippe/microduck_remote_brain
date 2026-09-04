@@ -15,11 +15,13 @@ The autonomous loop is deliberately local-first and does not require speech reco
 7. resolve the closed intent vocabulary into a bounded plan with deterministic code;
 8. run the existing deterministic gates and executor.
 
-In simulation, each cycle also reads the 8x8 ToF frame. The nearest valid measurements are reduced
-to left, center, and right clearance sectors. A blocked center forces a turn toward the clearer side
-or a stop when neither side is open; a forward walk requires both visual clearance and sufficient
-center depth. Small nearby balls, cubes, toys, and blocks may use the existing `ground_pick`,
-`kick_left`, or `kick_right` robot skills. Unknown or larger objects remain obstacles.
+In simulation, each cycle also reads the raw 8x8 ToF frame. Camera and ToF move together in the head,
+but the ToF optical center is 22.5 mm left of the camera. This is treated as conservative RGB-D
+fusion, not calibrated stereo triangulation. Camera-relative left, center, and right depth bands
+overlap adjacent ToF columns to absorb parallax near the robot, and exclude the two lower floor rows.
+Each semantic entity receives the depth of its aligned band in the persona context. The same aligned
+depths deterministically gate forward and curved walking, `ground_pick`, and kicks. A close return at
+a band boundary therefore blocks motion even when the old narrow center sector appears clear.
 
 The two bottom ToF rows form a conservative floor-continuity band. A sector is marked as a possible
 drop when at least half its lower rays have no valid return, or when every valid lower return is

@@ -70,7 +70,8 @@ on assumptions about a particular room or simulation map. Compare episodic memor
 scene to reason about change. If an approached point of interest disappears because it is now too
 close, leave that area and reorient instead of repeating the approach. Set release_memory only after
 an interaction or local exploration thread is complete and its older details are no longer
-useful."""
+useful. Never translate while the camera is off-center. Recenter it, confirm the target in a fresh
+scene, align the body if needed, confirm again, and only then advance."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +81,81 @@ class PersonaIntent:
     voice_style: str
     utterance: str
     release_memory: bool = False
+
+
+@dataclass(frozen=True, slots=True)
+class ApproachDecision:
+    action: str | None
+    target_kind: str | None
+    clear_target: bool = False
+
+
+class ApproachTracker:
+    def __init__(self) -> None:
+        self._target_kind: str | None = None
+        self._alignment_turns = 0
+
+    def decide(
+        self,
+        scene: SceneState,
+        depth: DepthObservation | None,
+        recent_behaviors: tuple[str, ...],
+    ) -> ApproachDecision | None:
+        camera_axis = current_camera_axis(recent_behaviors)
+        if self._target_kind is None:
+            if camera_axis not in {"left", "right"}:
+                return None
+            target = _best_approach_target(scene)
+            if target is None:
+                return None
+            return ApproachDecision("scan_center", target)
+
+        target = next(
+            (
+                entity
+                for entity in scene.entities
+                if entity.kind.strip().lower() == self._target_kind
+                and entity.confidence >= 0.65
+            ),
+            None,
+        )
+        if target is None:
+            return ApproachDecision(None, None, clear_target=True)
+        if target.bearing in {"left", "right"} and self._alignment_turns >= 2:
+            return ApproachDecision(None, None, clear_target=True)
+        if target.bearing == "left":
+            action = "turn_left"
+        elif target.bearing == "right":
+            action = "turn_right"
+        elif target.bearing == "center":
+            action = "walk_forward"
+        else:
+            return ApproachDecision(None, None, clear_target=True)
+        if not _scene_allows_action(action, scene, depth):
+            return ApproachDecision(None, None, clear_target=True)
+        return ApproachDecision(action, self._target_kind, clear_target=action == "walk_forward")
+
+    def commit(self, decision: ApproachDecision) -> None:
+        if decision.clear_target:
+            self._target_kind = None
+            self._alignment_turns = 0
+            return
+        self._target_kind = decision.target_kind
+        if decision.action in {"turn_left", "turn_right"}:
+            self._alignment_turns += 1
+
+
+def _best_approach_target(scene: SceneState) -> str | None:
+    candidates = [
+        entity
+        for entity in scene.entities
+        if entity.confidence >= 0.65
+        and entity.kind.strip().lower() not in NON_BLOCKING_ENTITY_KINDS
+        and entity.kind.strip().lower() not in PROTECTED_ENTITY_KINDS
+    ]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda entity: entity.confidence).kind.strip().lower()
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,10 +218,10 @@ class OllamaPersonaModel:
     ) -> PersonaIntent:
         interaction_actions = _safe_interactions(scene, depth, capabilities)
         avoidance_action = None if interaction_actions else _avoidance_action(depth)
-        gaze_aligned_action = (
+        camera_recenter_action = (
             None
             if interaction_actions or avoidance_action is not None
-            else _gaze_aligned_approach(scene, depth, recent_behaviors)
+            else _camera_recenter_for_interest(scene, recent_behaviors)
         )
         scan_action = _scan_action(scene, depth, recent_behaviors)
         special_actions = _safe_special_actions(scene, depth, capabilities, recent_behaviors)
@@ -166,8 +242,8 @@ class OllamaPersonaModel:
             offered_actions = (avoidance_action,)
         elif self._allow_movement and stand_recovery:
             offered_actions = ("sit_toggle",)
-        elif self._allow_movement and gaze_aligned_action is not None:
-            offered_actions = (gaze_aligned_action,)
+        elif self._allow_movement and camera_recenter_action is not None:
+            offered_actions = (camera_recenter_action,)
         elif self._allow_movement and scan_action is not None:
             offered_actions = (scan_action,)
         elif self._allow_movement and avoidance_action is not None:
@@ -258,6 +334,14 @@ class OllamaPersonaModel:
             if episodic_context
             else ""
         )
+        visual_depth_context = (
+            "\n\nCamera/ToF fused entity depths: "
+            + json.dumps(
+                _entity_depth_cues(scene, depth), separators=(",", ":"), allow_nan=False
+            )
+            if depth is not None
+            else ""
+        )
         payload = {
             "model": self._model,
             "stream": False,
@@ -270,7 +354,7 @@ class OllamaPersonaModel:
                         f"{self._prompt}\n\nScene state:\n"
                         f"{json.dumps(scene.to_dict(), separators=(',', ':'))}"
                         f"{depth_context}{capability_context}{recent_context}{camera_context}"
-                        f"{memory_context}"
+                        f"{visual_depth_context}{memory_context}"
                     ),
                 }
             ],
@@ -440,14 +524,17 @@ def _scene_allows_action(
     if depth is not None:
         if depth.drop_hazard_remembered:
             return False
-        if depth.center_clearance_mm is None or depth.center_clearance_mm < TOF_CLEAR_MM:
+        center_depth = depth.camera_aligned_clearance_mm("center")
+        if center_depth is None or center_depth < TOF_CLEAR_MM:
             return False
+        left_depth = depth.camera_aligned_clearance_mm("left")
         if action == "curve_left" and (
-            depth.left_clearance_mm is None or depth.left_clearance_mm < TOF_BLOCKED_MM
+            left_depth is None or left_depth < TOF_BLOCKED_MM
         ):
             return False
+        right_depth = depth.camera_aligned_clearance_mm("right")
         if action == "curve_right" and (
-            depth.right_clearance_mm is None or depth.right_clearance_mm < TOF_BLOCKED_MM
+            right_depth is None or right_depth < TOF_BLOCKED_MM
         ):
             return False
         return (
@@ -461,6 +548,22 @@ def _scene_allows_action(
         and no_near_obstacle
         and not explicit_hazards
     )
+
+
+def _entity_depth_cues(
+    scene: SceneState, depth: DepthObservation
+) -> list[dict[str, object]]:
+    return [
+        {
+            "kind": entity.kind,
+            "bearing": entity.bearing,
+            "visual_proximity": entity.proximity,
+            "tof_depth_mm": depth.camera_aligned_clearance_mm(entity.bearing),
+            "confidence": entity.confidence,
+        }
+        for entity in scene.entities
+        if entity.bearing != "unknown"
+    ]
 
 
 def _avoidance_action(depth: DepthObservation | None) -> str | None:
@@ -492,11 +595,10 @@ def _safe_interactions(
         return ()
     if depth is not None and depth.drop_hazard_remembered:
         return ()
-    if depth is not None and (
-        depth.center_clearance_mm is None
-        or not 100.0 <= depth.center_clearance_mm <= TOF_INTERACTION_MAX_MM
-    ):
-        return ()
+    if depth is not None:
+        center_depth = depth.camera_aligned_clearance_mm("center")
+        if center_depth is None or not 100.0 <= center_depth <= TOF_INTERACTION_MAX_MM:
+            return ()
     actions: list[str] = []
     for entity in scene.entities:
         if entity.kind.strip().lower() not in SMALL_OBJECT_KINDS or entity.proximity != "near":
@@ -572,22 +674,14 @@ def current_camera_axis(recent_behaviors: tuple[str, ...]) -> str:
     return "center"
 
 
-def _gaze_aligned_approach(
+def _camera_recenter_for_interest(
     scene: SceneState,
-    depth: DepthObservation | None,
     recent_behaviors: tuple[str, ...],
 ) -> str | None:
     camera_axis = current_camera_axis(recent_behaviors)
-    action = {"left": "curve_left", "right": "curve_right"}.get(camera_axis)
-    if action is None or not _scene_allows_action(action, scene, depth):
+    if camera_axis not in {"left", "right"}:
         return None
-    has_interest = any(
-        entity.confidence >= 0.65
-        and entity.kind.strip().lower() not in NON_BLOCKING_ENTITY_KINDS
-        and entity.kind.strip().lower() not in PROTECTED_ENTITY_KINDS
-        for entity in scene.entities
-    )
-    return action if has_interest else None
+    return "scan_center" if _best_approach_target(scene) is not None else None
 
 
 def _needs_active_behavior(recent_behaviors: tuple[str, ...]) -> bool:
@@ -621,6 +715,12 @@ def _steps_for(
         ]
     if action in MEMORY_ACTIONS:
         return [
+            {"id": "hold-body", "tool": "stop", "arguments": {}},
+            {
+                "id": "center-camera",
+                "tool": "look",
+                "arguments": {"x": 0.5, "y": 0.0, "z": 0.0, "neck_pitch": 0.0},
+            },
             {
                 "id": "turn-around",
                 "tool": "walk",

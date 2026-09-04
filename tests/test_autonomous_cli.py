@@ -13,7 +13,7 @@ from microduck_remote_brain.autonomous_cli import (
     _update_mapping,
     _write_status,
 )
-from microduck_remote_brain.autonomy import ActuatorResolver
+from microduck_remote_brain.autonomy import ActuatorResolver, PersonaIntent
 from microduck_remote_brain.episode_memory import EpisodeMemory
 from microduck_remote_brain.executor import ExecutionError, ExecutionReason
 from microduck_remote_brain.mapping import (
@@ -410,4 +410,166 @@ def test_cycle_turns_around_when_approached_interest_disappears(
         memory.close()
 
     assert context.recent_behaviors[-1] == "turn_around_left"
-    assert plans[0].steps[0].arguments["duration"] == 6.3
+    assert [step.tool for step in plans[0].steps] == [
+        "stop",
+        "look",
+        "walk",
+        "stop",
+        "sound",
+    ]
+    assert plans[0].steps[2].arguments["duration"] == 6.3
+
+
+def test_cycle_recenters_camera_and_defers_translation_until_next_observation(
+    monkeypatch, tmp_path
+) -> None:
+    plans = []
+    memory = EpisodeMemory()
+    current_scene = SceneState.from_dict(
+        {
+            "summary": "Open floor in the left camera view.",
+            "entities": [],
+            "free_floor": "clear",
+            "visibility": "good",
+            "hazards": [],
+        }
+    )
+
+    class FakePerception:
+        def capture(self) -> bytes:
+            return b"jpeg"
+
+        def capture_depth(self) -> DepthObservation:
+            return DepthObservation((), 600.0, 600.0, 600.0)
+
+    class ForwardPersona:
+        def decide(self, *_args, **_kwargs):
+            return PersonaIntent("walk_forward", "single", "curious", "")
+
+    monkeypatch.setattr(
+        "microduck_remote_brain.autonomous_cli.SimulatorPerception", FakePerception
+    )
+    monkeypatch.setattr(
+        "microduck_remote_brain.autonomous_cli._robot_capabilities",
+        lambda _config: RobotCapabilities("walk", frozenset()),
+    )
+    monkeypatch.setattr(
+        "microduck_remote_brain.autonomous_cli._execute_plan",
+        lambda _config, plan, *_args: plans.append(plan) or True,
+    )
+    context = SimpleNamespace(
+        config=object(),
+        perception=FakePerception(),
+        vision=SimpleNamespace(interpret=lambda _image: current_scene),
+        persona=ForwardPersona(),
+        actuators=ActuatorResolver(allow_movement=True),
+        audit=SimpleNamespace(write=lambda *_args, **_kwargs: None),
+        pause_file=None,
+        activity_file=None,
+        status_file=tmp_path / "status.json",
+        drop_memory=SimpleNamespace(update=lambda value: value),
+        mapping_session=None,
+        mapping_pose_provider=None,
+        mapping_worker=None,
+        exploration_policy=ExplorationPolicy(),
+        episode_memory=memory,
+        recent_behaviors=["scan_left"],
+        last_behavior={},
+    )
+    try:
+        assert _run_cycle(context)
+    finally:
+        memory.close()
+
+    assert context.recent_behaviors[-1] == "scan_center"
+    assert [step.tool for step in plans[0].steps] == ["stop", "look"]
+    assert plans[0].steps[1].arguments == {
+        "x": 0.5,
+        "y": 0.0,
+        "z": 0.0,
+        "neck_pitch": 0.0,
+    }
+
+
+def test_uniform_left_and_right_views_turn_body_to_inspect_behind(
+    monkeypatch, tmp_path
+) -> None:
+    plans = []
+    memory = EpisodeMemory()
+
+    def uniform_scene(summary: str) -> SceneState:
+        return SceneState.from_dict(
+            {
+                "summary": summary,
+                "entities": [],
+                "free_floor": "unknown",
+                "visibility": "good",
+                "hazards": [],
+                "visual_content": "uniform",
+            }
+        )
+
+    class FakePerception:
+        def capture(self) -> bytes:
+            return b"jpeg"
+
+        def capture_depth(self) -> DepthObservation:
+            return DepthObservation((), 650.0, 240.0, 300.0)
+
+    class ForbiddenPersona:
+        def decide(self, *_args, **_kwargs):
+            raise AssertionError("uniform panorama fallback must bypass the persona")
+
+    monkeypatch.setattr(
+        "microduck_remote_brain.autonomous_cli.SimulatorPerception", FakePerception
+    )
+    monkeypatch.setattr(
+        "microduck_remote_brain.autonomous_cli._robot_capabilities",
+        lambda _config: RobotCapabilities("walk", frozenset()),
+    )
+    monkeypatch.setattr(
+        "microduck_remote_brain.autonomous_cli._execute_plan",
+        lambda _config, plan, *_args: plans.append(plan) or True,
+    )
+    memory.remember(
+        uniform_scene("Only a plain wall is visible left"),
+        None,
+        "scan_right",
+        camera_axis="left",
+    )
+    context = SimpleNamespace(
+        config=object(),
+        perception=FakePerception(),
+        vision=SimpleNamespace(
+            interpret=lambda _image: uniform_scene("The same plain wall is visible right")
+        ),
+        persona=ForbiddenPersona(),
+        actuators=ActuatorResolver(allow_movement=True),
+        audit=SimpleNamespace(write=lambda *_args, **_kwargs: None),
+        pause_file=None,
+        activity_file=None,
+        status_file=tmp_path / "status.json",
+        drop_memory=SimpleNamespace(update=lambda value: value),
+        mapping_session=None,
+        mapping_pose_provider=None,
+        mapping_worker=None,
+        exploration_policy=ExplorationPolicy(),
+        episode_memory=memory,
+        recent_behaviors=["scan_left", "scan_right"],
+        last_behavior={},
+    )
+    try:
+        assert _run_cycle(context)
+    finally:
+        memory.close()
+
+    assert context.recent_behaviors[-1] == "turn_around_left"
+    assert [step.tool for step in plans[0].steps] == [
+        "stop",
+        "look",
+        "walk",
+        "stop",
+        "sound",
+    ]
+    assert plans[0].steps[2].arguments["angular_velocity"] == 0.5
+    assert plans[0].steps[2].arguments["duration"] == 6.3

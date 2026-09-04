@@ -26,6 +26,7 @@ def test_ollama_vision_sends_image_and_returns_scene(monkeypatch) -> None:
         "free_floor": "clear",
         "visibility": "good",
         "hazards": [],
+        "visual_content": "informative",
     }
     response = Response(
         json.dumps({"message": {"content": json.dumps(scene_value)}}).encode()
@@ -47,6 +48,11 @@ def test_ollama_vision_sends_image_and_returns_scene(monkeypatch) -> None:
     assert captured["format"]["properties"]["free_floor"]["enum"] == [
         "clear",
         "blocked",
+        "unknown",
+    ]
+    assert captured["format"]["properties"]["visual_content"]["enum"] == [
+        "informative",
+        "uniform",
         "unknown",
     ]
     assert captured["options"]["num_predict"] == 320

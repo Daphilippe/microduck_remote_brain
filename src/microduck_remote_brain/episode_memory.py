@@ -129,6 +129,37 @@ class EpisodeMemory:
         action, clearance = max(candidates.items(), key=lambda item: item[1])
         return action if clearance >= 100.0 else None
 
+    def uniform_panorama_action(
+        self,
+        scene: SceneState,
+        depth: DepthObservation | None,
+        camera_axis: str,
+    ) -> str | None:
+        if camera_axis != "right" or scene.visual_content != "uniform":
+            return None
+        if depth is not None and depth.drop_hazard_remembered:
+            return None
+        with self._lock:
+            left_was_uniform = any(
+                episode.camera_axis == "left"
+                and episode.scene.get("visual_content") == "uniform"
+                for episode in reversed(self._episodes[-5:])
+            )
+        if not left_was_uniform:
+            return None
+        if depth is None:
+            return "turn_around_left"
+        candidates = {
+            "turn_around_left": (
+                0.0 if "left" in depth.drop_hazard_sectors else depth.left_clearance_mm or 0.0
+            ),
+            "turn_around_right": (
+                0.0 if "right" in depth.drop_hazard_sectors else depth.right_clearance_mm or 0.0
+            ),
+        }
+        action, clearance = max(candidates.items(), key=lambda item: item[1])
+        return action if clearance >= 100.0 else None
+
     def close(self) -> None:
         self._executor.shutdown(wait=True)
 

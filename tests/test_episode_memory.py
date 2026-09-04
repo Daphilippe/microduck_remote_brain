@@ -17,6 +17,12 @@ def scene(summary: str) -> SceneState:
     )
 
 
+def uniform_scene(summary: str) -> SceneState:
+    value = scene(summary).to_dict()
+    value["visual_content"] = "uniform"
+    return SceneState.from_dict(value)
+
+
 def interest_scene(summary: str, entities: list[dict[str, object]]) -> SceneState:
     value = scene(summary).to_dict()
     value["entities"] = entities
@@ -117,5 +123,41 @@ def test_episode_records_camera_axis_used_for_semantic_scene() -> None:
         memory.close()
 
         assert '"camera_axis":"left"' in memory.context()
+    finally:
+        memory.close()
+
+
+def test_uniform_left_and_right_views_trigger_turn_around_toward_clear_side() -> None:
+    memory = EpisodeMemory()
+    try:
+        memory.remember(
+            uniform_scene("Only a plain white wall is visible left"),
+            None,
+            "scan_right",
+            camera_axis="left",
+        )
+
+        action = memory.uniform_panorama_action(
+            uniform_scene("Only the same plain wall is visible right"),
+            DepthObservation((), 600.0, 250.0, 300.0),
+            "right",
+        )
+
+        assert action == "turn_around_left"
+    finally:
+        memory.close()
+
+
+def test_single_uniform_view_does_not_trigger_turn_around() -> None:
+    memory = EpisodeMemory()
+    try:
+        assert (
+            memory.uniform_panorama_action(
+                uniform_scene("A plain surface is visible right"),
+                DepthObservation((), 600.0, 250.0, 300.0),
+                "right",
+            )
+            is None
+        )
     finally:
         memory.close()

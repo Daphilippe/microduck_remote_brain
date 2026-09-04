@@ -168,6 +168,13 @@ drop-off. That hazard remains latched until three consecutive fully safe observa
 turn from immediately erasing knowledge of a void that moved out of view. While latched, forward
 motion and object skills are forbidden; MicroDuck may only inspect a safe side or stop.
 
+The camera and ToF are both head-mounted, with the ToF optical center 22.5 mm left of the camera.
+MicroDuck uses this as conservative RGB-D depth rather than claiming true calibrated stereo. Visual
+entity bearings are associated with overlapping ToF column bands; the overlap absorbs near-field
+parallax caused by the baseline. The lower floor rows remain reserved for drop detection. Fused
+camera-aligned depths are sent with each visible entity and are also enforced by deterministic gates
+for forward motion, curved motion, and nearby-object skills.
+
 Outside a remembered drop hazard, MicroDuck behaves as an active domestic animal. A three-behavior
 activity window requires at least two physical choices, selected from forward walking, curved
 wandering, inspection turns, and small-object interactions. Ordinary visual uncertainty is tolerated
@@ -209,8 +216,18 @@ identical image. The invalid scene is never supplied to the action model.
 A valid scene also receives the proactive five-view scan after five behaviors without head
 acquisition, keeping object and person recognition spatially current. Semantic entity bearings are
 relative to the current camera axis. An interest discovered while the head is turned left or right
-therefore forces the next safe exploration step to advance on a matching left or right curve instead
-of treating the center of that image as straight ahead of the body.
+therefore starts a staged approach instead of treating the center of that image as straight ahead of
+the body. MicroDuck first recenters the camera and captures a new scene. It rotates the body if the
+same target remains left or right, captures another centered-camera scene, and advances only when the
+target is centered and current depth still permits translation. A lost or unsafe target cancels the
+approach. The same recenter-and-reobserve barrier applies to persona and map-driven translations.
+
+Semantic vision also labels a view as `uniform` only when it contains almost exclusively one color
+or one featureless surface without useful landmarks. If both the left and right views are uniform,
+MicroDuck stops the normal head scan, recenters the camera, and performs one bounded in-place
+half-turn to inspect behind on the next cycle. The turn uses the clearer ToF side and is suppressed
+by a remembered drop or insufficient lateral clearance. A single uniform view is not enough to
+trigger this fallback.
 
 If all three head views remain unusable, MicroDuck rotates its body toward the safer ToF sector and
 starts a new acquisition. It no longer repeats the same head scan indefinitely from one trunk pose.

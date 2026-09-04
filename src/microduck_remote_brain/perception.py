@@ -14,6 +14,12 @@ TOF_ROWS = 8
 TOF_COLS = 8
 DROP_DISTANCE_MM = 700.0
 DROP_MEMORY_CLEAR_FRAMES = 3
+CAMERA_TO_TOF_LATERAL_MM = 22.5
+CAMERA_ALIGNED_COLUMNS = {
+    "left": range(0, 4),
+    "center": range(2, 6),
+    "right": range(4, 8),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,11 +31,35 @@ class DepthObservation:
     drop_hazard_sectors: tuple[str, ...] = ()
     drop_hazard_remembered: bool = False
 
+    def camera_aligned_clearance_mm(self, bearing: str) -> float | None:
+        columns = CAMERA_ALIGNED_COLUMNS.get(bearing)
+        if columns is None:
+            return None
+        if len(self.distance_mm) == TOF_ROWS * TOF_COLS:
+            values = [
+                distance
+                for row in range(TOF_ROWS - 2)
+                for column in columns
+                if (distance := self.distance_mm[row * TOF_COLS + column]) is not None
+            ]
+            if values:
+                return min(values)
+        return {
+            "left": self.left_clearance_mm,
+            "center": self.center_clearance_mm,
+            "right": self.right_clearance_mm,
+        }[bearing]
+
     def to_dict(self) -> dict[str, object]:
         return {
             "left_clearance_mm": self.left_clearance_mm,
             "center_clearance_mm": self.center_clearance_mm,
             "right_clearance_mm": self.right_clearance_mm,
+            "camera_aligned_depth_mm": {
+                bearing: self.camera_aligned_clearance_mm(bearing)
+                for bearing in ("left", "center", "right")
+            },
+            "camera_to_tof_lateral_mm": CAMERA_TO_TOF_LATERAL_MM,
             "drop_hazard_sectors": list(self.drop_hazard_sectors),
             "drop_hazard_remembered": self.drop_hazard_remembered,
         }

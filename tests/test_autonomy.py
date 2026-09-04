@@ -4,7 +4,12 @@ import io
 import json
 from typing import Any
 
-from microduck_remote_brain.autonomy import ActuatorResolver, OllamaPersonaModel, PersonaIntent
+from microduck_remote_brain.autonomy import (
+    ActuatorResolver,
+    ApproachTracker,
+    OllamaPersonaModel,
+    PersonaIntent,
+)
 from microduck_remote_brain.perception import DepthObservation
 from microduck_remote_brain.robotd import RobotCapabilities
 from microduck_remote_brain.scene import SceneState
@@ -277,8 +282,14 @@ def test_resolver_builds_bounded_memory_driven_turn_around() -> None:
         current_depth,
     )
 
-    assert [step.tool for step in plan.steps] == ["walk", "stop", "sound"]
-    assert plan.steps[0].arguments == {
+    assert [step.tool for step in plan.steps] == ["stop", "look", "walk", "stop", "sound"]
+    assert plan.steps[1].arguments == {
+        "x": 0.5,
+        "y": 0.0,
+        "z": 0.0,
+        "neck_pitch": 0.0,
+    }
+    assert plan.steps[2].arguments == {
         "linear_velocity": 0.0,
         "angular_velocity": 0.5,
         "duration": 6.3,
@@ -392,6 +403,45 @@ def test_tof_obstacle_forces_turn_toward_clearer_side(monkeypatch) -> None:
     assert plan.steps[0].arguments["angular_velocity"] == 0.5
 
 
+def test_persona_receives_tof_depth_associated_with_visual_entity(monkeypatch) -> None:
+    response = Response(
+        json.dumps({"message": {"content": decision("turn_right")}}).encode()
+    )
+    captured: dict[str, Any] = {}
+
+    def urlopen(request, **_kwargs):
+        captured.update(json.loads(request.data))
+        return response
+
+    monkeypatch.setattr("microduck_remote_brain.autonomy.urllib.request.urlopen", urlopen)
+    observed = SceneState.from_dict(
+        {
+            "summary": "A chair is visible left.",
+            "entities": [
+                {
+                    "kind": "chair",
+                    "bearing": "left",
+                    "proximity": "mid",
+                    "confidence": 0.9,
+                }
+            ],
+            "free_floor": "blocked",
+            "visibility": "good",
+            "hazards": [],
+        }
+    )
+
+    OllamaPersonaModel("qwen", allow_movement=True).decide(
+        observed,
+        depth=depth(340.0, 200.0, 600.0),
+    )
+
+    content = captured["messages"][0]["content"]
+    assert "Camera/ToF fused entity depths" in content
+    assert '"kind":"chair"' in content
+    assert '"tof_depth_mm":340.0' in content
+
+
 def test_first_safe_cycle_offers_only_physical_behavior(monkeypatch) -> None:
     response = Response(
         json.dumps({"message": {"content": decision("curve_left")}}).encode()
@@ -448,6 +498,20 @@ def test_tof_clearance_overrides_uncertain_ordinary_visual_obstacle() -> None:
 
     assert plan.steps[0].tool == "walk"
     assert plan.steps[0].arguments["linear_velocity"] == 0.3
+
+
+def test_camera_aligned_depth_blocks_forward_motion_at_sector_boundary() -> None:
+    distances = [900.0] * 64
+    distances[2] = 180.0
+    current_depth = DepthObservation(tuple(distances), 180.0, 900.0, 900.0)
+
+    plan = ActuatorResolver(allow_movement=True).resolve(
+        PersonaIntent("walk_forward", "single", "curious", ""),
+        scene("The image appears clear ahead.", free_floor="clear"),
+        current_depth,
+    )
+
+    assert plan.steps[0].tool == "stop"
 
 
 def test_tof_obstacle_turns_toward_best_tight_side(monkeypatch) -> None:
@@ -608,9 +672,9 @@ def test_head_scan_completes_horizontal_vertical_center_sequence(monkeypatch) ->
     ]
 
 
-def test_interest_found_with_left_camera_forces_left_curved_approach(monkeypatch) -> None:
+def test_interest_found_with_left_camera_forces_recentering(monkeypatch) -> None:
     response = Response(
-        json.dumps({"message": {"content": decision("curve_left")}}).encode()
+        json.dumps({"message": {"content": decision("scan_center")}}).encode()
     )
     captured: dict[str, Any] = {}
 
@@ -642,8 +706,94 @@ def test_interest_found_with_left_camera_forces_left_curved_approach(monkeypatch
         recent_behaviors=("scan_left",),
     )
 
-    assert captured["format"]["properties"]["action"]["enum"] == ["curve_left"]
+    assert captured["format"]["properties"]["action"]["enum"] == ["scan_center"]
     assert "Camera axis relative to the trunk: left" in captured["messages"][0]["content"]
+
+
+def test_approach_tracker_recenters_aligns_and_then_advances() -> None:
+    tracker = ApproachTracker()
+    left_camera_scene = SceneState.from_dict(
+        {
+            "summary": "A chair is centered in the left camera view.",
+            "entities": [
+                {
+                    "kind": "chair",
+                    "bearing": "center",
+                    "proximity": "mid",
+                    "confidence": 0.9,
+                }
+            ],
+            "free_floor": "clear",
+            "visibility": "good",
+            "hazards": [],
+        }
+    )
+    centered_head_scene = SceneState.from_dict(
+        {
+            **left_camera_scene.to_dict(),
+            "summary": "The chair remains left after centering the head.",
+            "entities": [
+                {
+                    "kind": "chair",
+                    "bearing": "left",
+                    "proximity": "mid",
+                    "confidence": 0.9,
+                }
+            ],
+        }
+    )
+
+    recenter = tracker.decide(left_camera_scene, depth(700, 700, 700), ("scan_left",))
+    assert recenter is not None and recenter.action == "scan_center"
+    tracker.commit(recenter)
+
+    align = tracker.decide(
+        centered_head_scene,
+        depth(700, 700, 700),
+        ("scan_left", "scan_center"),
+    )
+    assert align is not None and align.action == "turn_left"
+    tracker.commit(align)
+
+    advance = tracker.decide(
+        left_camera_scene,
+        depth(700, 700, 700),
+        ("scan_left", "scan_center", "turn_left"),
+    )
+    assert advance is not None and advance.action == "walk_forward"
+
+
+def test_approach_tracker_abandons_target_after_two_alignment_turns() -> None:
+    tracker = ApproachTracker()
+    target = SceneState.from_dict(
+        {
+            "summary": "A chair remains left.",
+            "entities": [
+                {
+                    "kind": "chair",
+                    "bearing": "left",
+                    "proximity": "mid",
+                    "confidence": 0.9,
+                }
+            ],
+            "free_floor": "clear",
+            "visibility": "good",
+            "hazards": [],
+        }
+    )
+    found = tracker.decide(target, depth(700, 700, 700), ("scan_left",))
+    assert found is not None
+    tracker.commit(found)
+    for _ in range(2):
+        alignment = tracker.decide(target, depth(700, 700, 700), ("scan_center",))
+        assert alignment is not None and alignment.action == "turn_left"
+        tracker.commit(alignment)
+
+    abandoned = tracker.decide(target, depth(700, 700, 700), ("scan_center",))
+
+    assert abandoned is not None
+    assert abandoned.action is None
+    assert abandoned.clear_target
 
 
 def test_vertical_scan_targets_above_and_nearby_floor() -> None:

@@ -6,7 +6,11 @@ import json
 
 import pytest
 
-from microduck_remote_brain.perception import DropHazardMemory, SimulatorPerception
+from microduck_remote_brain.perception import (
+    DepthObservation,
+    DropHazardMemory,
+    SimulatorPerception,
+)
 
 
 class FakeConnection:
@@ -85,6 +89,16 @@ def test_simulator_perception_summarizes_tof_clearance(
     assert depth.right_clearance_mm == 500
     assert len(depth.distance_mm) == 64
     assert connection.sent[-1] == {"op": "tof"}
+
+
+def test_camera_aligned_depth_overlaps_tof_columns_for_sensor_baseline() -> None:
+    distances = [900.0] * 64
+    distances[2] = 180.0
+    depth = DepthObservation(tuple(distances), 180.0, 900.0, 900.0)
+
+    assert depth.center_clearance_mm == 900.0
+    assert depth.camera_aligned_clearance_mm("center") == 180.0
+    assert depth.to_dict()["camera_to_tof_lateral_mm"] == 22.5
 
 
 def test_tof_detects_and_remembers_lower_field_drop_off(

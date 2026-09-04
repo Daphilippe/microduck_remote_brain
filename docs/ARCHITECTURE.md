@@ -41,6 +41,12 @@ locomotion vocabulary is `walk_forward`, `curve_left`, `curve_right`, `back_up`,
 on a named map or stored route. Ordinary semantic uncertainty may be tolerated when ToF confirms
 clearance; the remembered drop boundary remains absolute and disables reverse escape too.
 
+Depth used for motion is camera-aligned rather than copied directly from the narrow ToF sectors.
+Because the head-mounted ToF is offset 22.5 mm left of the camera and camera intrinsics are not yet
+calibrated, adjacent 8x8 columns overlap in each visual bearing band. This conservative RGB-D fusion
+associates a depth cue with every semantic entity and catches near obstacles at sector boundaries;
+it deliberately does not claim per-pixel stereo triangulation.
+
 `robot.subscribe` capability names and `robot.mode` are refreshed before every persona decision.
 They constrain the schema itself: unavailable policies cannot be selected, and roller mode removes
 walk-only scripted behaviors. Head scans are represented as deterministic `stop` plus `robot.look`
